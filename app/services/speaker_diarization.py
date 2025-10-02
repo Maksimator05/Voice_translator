@@ -7,19 +7,13 @@ logger = logging.getLogger(__name__)
 
 
 class SimpleSpeakerDiarizer:
-    """
-    Упрощенный диарайзер для 1-й лабораторной.
-    В реальности нужно использовать pyannote.audio или аналоги.
-    """
+
 
     def __init__(self):
         self.speaker_counter = 0
 
     def detect_speaker_changes(self, text: str, timestamps: List[Tuple[float, float]]) -> List[SpeakerSegment]:
-        """
-        Простой алгоритм детекции смены спикеров на основе пауз.
-        Для MVP используем эвристику.
-        """
+
         segments = []
 
         # Эвристика: считаем, что пауза > 2 секунды - смена спикера
