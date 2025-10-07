@@ -1,11 +1,11 @@
 import os
-from typing import List, Dict, Any
-
+from typing import List
+from datetime import timedelta
 
 class Settings:
     """Конфигурация Intelligent Meeting Analyzer"""
     APP_NAME: str = "Intelligent Meeting Analyzer"
-    VERSION: str = "1.0.0"
+    VERSION: str = "2.0.0"
     DESCRIPTION: str = "AI система для структурированного анализа встреч и лекций"
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -32,7 +32,6 @@ class Settings:
     UPLOAD_DIR: str = "uploads"
     MAX_FILE_SIZE_MB: int = 500
 
-    # ДОБАВЛЯЕМ недостающие настройки:
     ALLOWED_AUDIO_TYPES: List[str] = [
         'audio/mpeg', 'audio/wav', 'audio/mp4', 'audio/x-m4a', 'audio/ogg'
     ]
@@ -40,7 +39,14 @@ class Settings:
         'video/mp4', 'video/mpeg', 'video/quicktime'
     ]
 
-    # ДОБАВЛЯЕМ свойство, которое используется в file_service.py
+    # НАСТРОЙКИ АУТЕНТИФИКАЦИИ
+    SECRET_KEY: str = "your-secret-key-for-jwt-tokens-change-in-production"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 дней
+
+    # Настройки базы данных
+    DATABASE_URL: str = "sqlite:///./meeting_analyzer.db"
+
     @property
     def allowed_content_types(self) -> List[str]:
         return self.ALLOWED_AUDIO_TYPES + self.ALLOWED_VIDEO_TYPES
