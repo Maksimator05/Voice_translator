@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import inspect
 from app.config import settings
 
 # Создаем движок базы данных
@@ -29,16 +30,36 @@ def create_tables():
     """Создает таблицы в БД - ГАРАНТИРОВАННО"""
     print("🔧 Создание таблиц в базе данных...")
 
-    # Импортируем модели ЯВНО перед созданием таблиц
-    from app.auth.models import User
+    try:
+        # 1. Импортируем модели в ПРАВИЛЬНОМ порядке
+        from app.auth.models import User
+        print("✅ Модель User импортирована")
 
-    # Создаем таблицы
-    Base.metadata.create_all(bind=engine)
+        # 2. Сначала создаем таблицу users
+        User.metadata.create_all(bind=engine)
+        print("✅ Таблица users создана")
 
-    # Проверяем создание
-    from sqlalchemy import inspect
-    inspector = inspect(engine)
-    tables = inspector.get_table_names()
+        # 3. Затем импортируем и создаем остальные таблицы
+        from app.models.chat_models import ChatSession, ChatMessage
+        print("✅ Модели ChatSession и ChatMessage импортированы")
 
-    print(f"✅ Созданы таблицы: {tables}")
-    return tables
+        from app.models.meeting_models import AnalysisResult
+        print("✅ Модель AnalysisResult импортирована")
+
+        # 4. Создаем остальные таблицы
+        Base.metadata.create_all(bind=engine)
+        print("✅ Все таблицы созданы")
+
+        # 5. Проверяем создание
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+
+        print(f"✅ Созданы таблицы: {tables}")
+        return tables
+
+    except ImportError as e:
+        print(f"❌ Ошибка импорта моделей: {e}")
+        raise
+    except Exception as e:
+        print(f"❌ Ошибка создания таблиц: {e}")
+        raise

@@ -1,6 +1,10 @@
 import os
 from typing import List
 from datetime import timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 class Settings:
     """Конфигурация Intelligent Meeting Analyzer"""
@@ -47,9 +51,36 @@ class Settings:
     # Настройки базы данных
     DATABASE_URL: str = "sqlite:///./meeting_analyzer.db"
 
+    # НАСТРОЙКИ LM STUDIO
+    LM_STUDIO_URL: str = os.getenv("LM_STUDIO_URL", "http://localhost:1234")
+    LM_STUDIO_MODEL: str = os.getenv("LM_STUDIO_MODEL", "local-model")
+
+    # Настройки локальной диаризации
+    DIARIZATION_MIN_SPEAKERS: int = 1
+    DIARIZATION_MAX_SPEAKERS: int = 4
+    DIARIZATION_SEGMENT_DURATION: float = 2.0
+
+    # Настройки ML для локальной обработки
+    MFCC_FEATURES: int = 13
+    CLUSTERING_METHOD: str = "kmeans"
+
+    # Пути для сохранения визуализаций
+    VISUALIZATIONS_DIR: str = "uploads/visualizations"
+
     @property
     def allowed_content_types(self) -> List[str]:
         return self.ALLOWED_AUDIO_TYPES + self.ALLOWED_VIDEO_TYPES
+
+    @property
+    def diarization_config(self) -> dict:
+        """Конфигурация для локальной диаризации"""
+        return {
+            'min_speakers': self.DIARIZATION_MIN_SPEAKERS,
+            'max_speakers': self.DIARIZATION_MAX_SPEAKERS,
+            'segment_duration': self.DIARIZATION_SEGMENT_DURATION,
+            'mfcc_features': self.MFCC_FEATURES,
+            'clustering_method': self.CLUSTERING_METHOD
+        }
 
 
 settings = Settings()

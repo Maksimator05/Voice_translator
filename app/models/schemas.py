@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from datetime import datetime
 from typing import List, Optional
-from .meeting_models import MeetingAnalysisResult
+from .meeting_schemas import MeetingAnalysisResult
 
 class HealthResponse(BaseModel):
     service: str = "Intelligent Meeting Analyzer"

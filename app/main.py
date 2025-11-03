@@ -4,26 +4,32 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import logging
+from typing import List
 import uuid
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
 # Добавляем путь для импортов
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from app.config import settings
-from app.models import schemas
-from app.models.meeting_models import MeetingAnalysisResult, KeyPoint
-from app.services.file_service import FileService
-from app.services.transcription_service import meeting_transcriber
-from app.services.meeting_analyzer import ContentProcessor
 
 # Импорты для аутентификации
 from app.auth.service import get_current_active_user, create_access_token, authenticate_user, get_password_hash
 from app.auth.schemas import UserCreate, UserLogin, Token, UserResponse
 from app.auth.models import User
-from app.database.connection import get_db, create_tables, engine, Base
-from sqlalchemy.orm import Session
-from sqlalchemy import inspect, text
+from app.database.connection import get_db, create_tables
+
+# Импорты для чатов
+from app.services.chat_service import ChatService
+from app.models.chat_schemas import (
+    ChatSessionCreate,
+    ChatSessionResponse,
+    ChatMessageCreate,
+    ChatMessageResponse,
+    ChatSessionListResponse,
+    SessionType
+)
+from app.services.llm_processor import llm_processor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,99 +44,50 @@ app = FastAPI(
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-content_processor = ContentProcessor()
+# Ленивая инициализация сервисов
+content_processor = None
+FileService = None
 
 
-def check_database_integrity() -> bool:
-    """
-    Проверяет целостность и существование базы данных
-    Возвращает True если БД в порядке, False если нужно пересоздать
-    """
-    try:
-        # Проверяем подключение к БД
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-
-        # Проверяем существование таблиц
-        inspector = inspect(engine)
-        tables = inspector.get_table_names()
-
-        # Должна быть как минимум таблица users
-        if 'users' not in tables:
-            logger.warning("❌ Таблица 'users' не найдена в базе данных")
-            return False
-
-        # Проверяем структуру таблицы users
-        users_columns = [col['name'] for col in inspector.get_columns('users')]
-        required_columns = ['id', 'email', 'username', 'hashed_password', 'is_active']
-
-        for col in required_columns:
-            if col not in users_columns:
-                logger.warning(f"❌ Отсутствует обязательная колонка '{col}' в таблице users")
-                return False
-
-        logger.info("✅ База данных прошла проверку целостности")
-        return True
-
-    except Exception as e:
-        logger.warning(f"❌ Ошибка проверки целостности БД: {e}")
-        return False
+def get_content_processor():
+    global content_processor
+    if content_processor is None:
+        from app.services.meeting_analyzer import ContentProcessor
+        content_processor = ContentProcessor()
+    return content_processor
 
 
-def initialize_database():
-    """Умная инициализация базы данных"""
-    logger.info("🔍 Проверка целостности базы данных...")
+def get_llm_processor():
+    """Основной процессор для всех AI задач"""
+    return llm_processor
 
-    # Проверяем целостность существующей БД
-    if check_database_integrity():
-        logger.info("✅ Используется существующая база данных")
-        return
 
-    # Если БД повреждена или не существует, создаем заново
-    logger.info("🔄 Создание/пересоздание базы данных...")
+def get_file_service():
+    global FileService
+    if FileService is None:
+        from app.services.file_service import FileService as FS
+        FileService = FS
+    return FileService
 
-    try:
-        # ЯВНО импортируем модели для регистрации в метаданных
-        from app.auth.models import User
-        logger.info("✅ Модели пользователей зарегистрированы")
-
-        # Создаем все таблицы
-        Base.metadata.create_all(bind=engine)
-
-        # Проверяем создание
-        inspector = inspect(engine)
-        tables = inspector.get_table_names()
-        logger.info(f"📋 Созданные таблицы: {tables}")
-
-        logger.info("✅ База данных успешно инициализирована")
-
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка инициализации БД: {e}")
-        raise
 
 @app.on_event("startup")
 async def startup_event():
     """Инициализация при запуске"""
     logger.info("🔄 Инициализация Intelligent Meeting Analyzer...")
 
-    # Создаем таблицы в БД
     try:
-        from app.database import create_tables
         create_tables()
+        logger.info("✅ База данных инициализирована")
     except Exception as e:
-        logger.error(f"❌ Не удалось инициализировать базу данных: {e}")
-        # В продакшене здесь должна быть более сложная логика восстановления
-        raise
+        logger.error(f"❌ Не удалось инициализировать БД: {e}")
 
-    # Инициализация ML модели
+    # Инициализация LLM процессора
     try:
-        await meeting_transcriber.initialize_model()
-        logger.info("✅ Система анализа встреч готова к работе")
+        processor = get_llm_processor()
+        await processor.initialize_model()
+        logger.info("✅ LLM процессор инициализирован")
     except Exception as e:
-        logger.error(f"❌ Не удалось загрузить ML модель: {e}")
-        # Продолжаем работу, но без транскрипции
-        logger.warning("⚠️ Система будет работать в ограниченном режиме")
-
+        logger.error(f"❌ Не удалось инициализировать LLM процессор: {e}")
 
 
 # ==================== ЭНДПОИНТЫ АУТЕНТИФИКАЦИИ ====================
@@ -138,7 +95,6 @@ async def startup_event():
 @app.post("/api/auth/register", response_model=Token)
 async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     """Регистрация нового пользователя"""
-    # Проверяем, нет ли уже пользователя с таким email
     db_user_email = db.query(User).filter(User.email == user_data.email).first()
     if db_user_email:
         raise HTTPException(
@@ -146,7 +102,6 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
             detail="Пользователь с таким email уже зарегистрирован"
         )
 
-    # Проверяем, нет ли уже пользователя с таким username
     db_user_username = db.query(User).filter(User.username == user_data.username).first()
     if db_user_username:
         raise HTTPException(
@@ -154,12 +109,10 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
             detail="Пользователь с таким именем уже существует"
         )
 
-    # Создаем нового пользователя
     hashed_password = get_password_hash(user_data.password)
     db_user = User(
         email=user_data.email,
         username=user_data.username,
-        full_name=user_data.full_name,
         hashed_password=hashed_password
     )
 
@@ -167,7 +120,6 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_user)
 
-    # Создаем токен
     access_token = create_access_token(data={"sub": db_user.username})
 
     return Token(
@@ -188,7 +140,6 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Создаем токен
     access_token = create_access_token(data={"sub": user.username})
 
     return Token(
@@ -204,25 +155,201 @@ async def get_me(current_user: User = Depends(get_current_active_user)):
     return UserResponse.from_orm(current_user)
 
 
+# ==================== ЭНДПОИНТЫ ЧАТОВ ====================
+
+@app.post("/api/chats", response_model=ChatSessionResponse)
+async def create_chat(
+        chat_data: ChatSessionCreate,
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """Создание нового чата"""
+    try:
+        chat_service = ChatService(db)
+        chat_session = chat_service.create_chat_session(current_user.id, chat_data)
+        return chat_session
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания чата: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка создания чата")
+
+
+@app.get("/api/chats", response_model=List[ChatSessionListResponse])
+async def get_chats(
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """Получение списка чатов пользователя"""
+    try:
+        chat_service = ChatService(db)
+        chats = chat_service.get_user_chat_sessions(current_user.id)
+        return chats
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения списка чатов: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка получения чатов")
+
+
+@app.get("/api/chats/{chat_id}", response_model=ChatSessionResponse)
+async def get_chat(
+        chat_id: int,
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """Получение конкретного чата с сообщениями"""
+    try:
+        chat_service = ChatService(db)
+        chat_session = chat_service.get_chat_session(chat_id, current_user.id)
+
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+
+        return chat_session
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения чата: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка получения чата")
+
+
+@app.post("/api/chats/{chat_id}/messages", response_model=ChatMessageResponse)
+async def add_message(
+        chat_id: int,
+        message_data: ChatMessageCreate,
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """Добавление сообщения в чат"""
+    try:
+        chat_service = ChatService(db)
+        message = chat_service.add_message_to_chat(chat_id, current_user.id, message_data)
+        return message
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ Ошибка добавления сообщения: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка добавления сообщения")
+
+
+@app.get("/api/chats/{chat_id}/messages", response_model=List[ChatMessageResponse])
+async def get_chat_messages(
+        chat_id: int,
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db),
+        limit: int = 50
+):
+    """Получение сообщений чата"""
+    try:
+        chat_service = ChatService(db)
+        messages = chat_service.get_chat_messages(chat_id, current_user.id, limit)
+        return messages
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения сообщений: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка получения сообщений")
+
+
+@app.post("/api/chats/{chat_id}/ask")
+async def ask_llm(
+        chat_id: int,
+        request_data: dict,
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """
+    Отправка сообщения AI и получение ответа
+    """
+    try:
+        user_message = request_data.get("message", "").strip()
+        if not user_message:
+            raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+        chat_service = ChatService(db)
+
+        # Проверяем существование чата
+        chat_session = chat_service.get_chat_session(chat_id, current_user.id)
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+
+        # Сохраняем сообщение пользователя
+        user_msg_data = ChatMessageCreate(
+            content=user_message,
+            role="user",
+            message_type="text"
+        )
+        user_message_obj = chat_service.add_message_to_chat(chat_id, current_user.id, user_msg_data)
+
+        # Получаем историю сообщений для контекста
+        chat_history = chat_service.get_chat_messages(chat_id, current_user.id, limit=20)
+
+        # Формируем промпт с историей
+        context_messages = []
+        for msg in chat_history:
+            context_messages.append({
+                "role": msg.role,
+                "content": msg.content
+            })
+
+        # Получаем ответ от LLM
+        llm_processor = get_llm_processor()
+        ai_response = await llm_processor.generate_chat_response(user_message, context_messages)
+
+        # Сохраняем ответ AI
+        ai_msg_data = ChatMessageCreate(
+            content=ai_response,
+            role="assistant",
+            message_type="text"
+        )
+        ai_message_obj = chat_service.add_message_to_chat(chat_id, current_user.id, ai_msg_data)
+
+        return {
+            "user_message": user_message_obj,
+            "ai_response": ai_message_obj,
+            "chat_id": chat_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Ошибка в AI чате: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка обработки запроса")
+
+
 # ОБЩИЕ ЭНДПОИНТЫ
 
 @app.get("/")
 async def root():
     """Корневой эндпоинт"""
+    llm_processor = get_llm_processor()
+
     return {
         "message": "Intelligent Meeting Analyzer API с аутентификацией работает!",
         "version": settings.VERSION,
         "status": "active",
-        "authentication_required": True,
+        "features": {
+            "authentication": True,
+            "transcription": True,
+            "speaker_diarization": True,
+            "llm_processing": True,
+            "meeting_analysis": True,
+            "chat_system": True
+        },
         "endpoints": {
             "auth": {
                 "register": "/api/auth/register",
                 "login": "/api/auth/login",
                 "me": "/api/auth/me"
             },
+            "chats": {
+                "create_chat": "/api/chats",
+                "list_chats": "/api/chats",
+                "get_chat": "/api/chats/{chat_id}",
+                "add_message": "/api/chats/{chat_id}/messages",
+                "ask_ai": "/api/chats/{chat_id}/ask"
+            },
             "analysis": {
                 "analyze_meeting": "/api/analyze-meeting",
-                "transcribe_simple": "/api/transcribe-simple"
+                "transcribe_simple": "/api/transcribe-simple",
+                "diarize_speakers": "/api/diarize-speakers"
             },
             "info": {
                 "health": "/api/health",
@@ -235,149 +362,18 @@ async def root():
 @app.get("/api/health")
 async def health_check():
     """Проверка здоровья сервиса"""
+    llm_processor = get_llm_processor()
+
     return {
         "status": "healthy",
-        "model_loaded": meeting_transcriber.model_loaded,
-        "database": "connected",
-        "authentication": "enabled",
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-@app.get("/api/info")
-async def api_info():
-    """Информация о API"""
-    return {
-        "name": settings.APP_NAME,
-        "version": settings.VERSION,
-        "description": settings.DESCRIPTION,
-        "features": [
-            "Аутентификация пользователей",
-            "Транскрипция аудио (Whisper)",
-            "Анализ встреч и лекций",
-            "Структурирование контента",
-            "Определение водности текста"
-        ],
-        "models": {
-            "transcription": f"Whisper {settings.WHISPER_MODEL_SIZE}",
-            "authentication": "JWT + bcrypt"
+        "timestamp": datetime.now().isoformat(),
+        "services": {
+            "database": "connected",
+            "authentication": "enabled",
+            "llm_processor": "available",
+            "file_processing": "available"
         }
     }
-
-
-#ЗАЩИЩЕННЫЕ ЭНДПОИНТЫ АНАЛИЗА
-
-@app.post("/api/analyze-meeting", response_model=schemas.AnalysisResponse)
-async def analyze_meeting(
-        file: UploadFile = File(..., description="Аудио или видео файл для анализа"),
-        current_user: User = Depends(get_current_active_user)
-):
-    """
-    Интеллектуальный анализ встречи: транскрипция, анализ содержания, генерация конспекта.
-    Требуется аутентификация.
-    """
-    logger.info(f"🎯 Запрос на анализ от пользователя: {current_user.username} - {file.filename}")
-
-    # Валидация файла
-    FileService.validate_voice_file(file)
-    analysis_id = f"meeting_{uuid.uuid4().hex[:8]}"
-    temp_file_path = None
-
-    try:
-        # Сохраняем файл
-        temp_file_path = await FileService.save_temporary_file(file, analysis_id)
-        logger.info(f"📁 Файл сохранен для пользователя {current_user.username}")
-
-        # Транскрипция встречи
-        start_time = datetime.now()
-        transcription_result = await meeting_transcriber.transcribe_meeting(temp_file_path)
-        logger.info(f"✅ Транскрипция завершена для пользователя {current_user.username}")
-
-        # Анализ содержания
-        analysis_data = await content_processor.process_meeting_content(
-            transcription_result["text"],
-            transcription_result["duration"]
-        )
-
-        # Создаем результат анализа
-        result = MeetingAnalysisResult(
-            meeting_id=analysis_id,
-            original_filename=file.filename,
-            duration_seconds=transcription_result["duration"],
-            total_speakers=1,
-            speakers=[],
-            segments=[],
-            key_points=[KeyPoint(
-                text=f"Анализ выполнен пользователем: {current_user.username}",
-                importance_score=0.9,
-                speakers=["system"],
-                timestamp=0.0
-            )],
-            tasks=[],
-            decisions=[],
-            summary=analysis_data["summary"],
-            water_content_ratio=analysis_data["water_content"],
-            processing_time=(datetime.now() - start_time).total_seconds(),
-            created_at=datetime.now()
-        )
-
-        logger.info(f"🎉 Анализ завершен успешно для пользователя {current_user.username}")
-
-        return schemas.AnalysisResponse(
-            analysis_id=analysis_id,
-            status="completed",
-            result=result,
-            processing_time=result.processing_time
-        )
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка анализа встречи {analysis_id} для пользователя {current_user.username}: {e}")
-        return schemas.AnalysisResponse(
-            analysis_id=analysis_id,
-            status="error",
-            error_message=str(e),
-            processing_time=0
-        )
-    finally:
-        if temp_file_path:
-            FileService.cleanup_temp_file(temp_file_path)
-
-
-@app.post("/api/transcribe-simple", response_model=schemas.SimpleTranscriptionResponse)
-async def transcribe_simple(
-        file: UploadFile = File(..., description="Аудио файл для простой транскрипции"),
-        current_user: User = Depends(get_current_active_user)
-):
-    """
-    Упрощенная транскрипция аудио файла.
-    Требуется аутентификация.
-    """
-    logger.info(f"🎵 Запрос на транскрипцию от пользователя: {current_user.username}")
-
-    FileService.validate_voice_file(file)
-    transcription_id = FileService.generate_transcription_id()
-    temp_file_path = None
-
-    try:
-        temp_file_path = await FileService.save_temporary_file(file, transcription_id)
-        result = await meeting_transcriber.transcribe_meeting(temp_file_path)
-
-        logger.info(f"✅ Простая транскрипция завершена для пользователя {current_user.username}")
-
-        return schemas.SimpleTranscriptionResponse(
-            transcription_id=transcription_id,
-            original_filename=file.filename,
-            raw_text=result["text"],
-            detected_language=result["language"],
-            processing_time=result["processing_time"],
-            created_at=datetime.now()
-        )
-    except Exception as e:
-        logger.error(f"❌ Ошибка транскрипции для пользователя {current_user.username}: {e}")
-        raise HTTPException(status_code=500, detail=f"Ошибка транскрипции: {str(e)}")
-    finally:
-        if temp_file_path:
-            FileService.cleanup_temp_file(temp_file_path)
 
 
 # ОБРАБОТЧИКИ ОШИБОК
@@ -405,10 +401,4 @@ async def global_exception_handler(request, exc):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(
-        "main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=settings.DEBUG,
-        log_level="info"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
