@@ -3,6 +3,7 @@ import logging
 import requests
 import json
 import librosa
+import whisper
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 
@@ -19,7 +20,7 @@ class LLMProcessor:
     def __init__(self, config=None):
         self.config = config or {
             'base_url': 'http://localhost:1234',
-            'timeout': 120,
+            'timeout': 300,
             'max_tokens': 4000,
             'temperature': 0.7,
             'max_retries': 3,
@@ -29,6 +30,11 @@ class LLMProcessor:
         self.model = os.getenv('LM_STUDIO_MODEL', 'local-model')
         self.is_connected = False
         self.available_models = []
+
+        # Инициализация Whisper модели
+        self.whisper_model = None
+        self.whisper_initialized = False
+        self.whisper_model_size = os.getenv('WHISPER_MODEL', 'base')
 
         logger.info(f"✅ LLM процессор инициализирован: {self.base_url}")
 
@@ -40,6 +46,10 @@ class LLMProcessor:
                 self.is_connected = True
                 await self._load_available_models()
                 logger.info("✅ LM Studio подключен и готов к работе")
+
+                # Инициализируем Whisper
+                await self._initialize_whisper()
+
                 return True
             else:
                 logger.warning("⚠️ LM Studio недоступен")
@@ -48,6 +58,265 @@ class LLMProcessor:
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации LM Studio: {e}")
             return False
+
+    async def _initialize_whisper(self):
+        """Инициализация модели Whisper для транскрипции"""
+        try:
+            logger.info(f"🔄 Загрузка модели Whisper ({self.whisper_model_size})...")
+            self.whisper_model = whisper.load_model(self.whisper_model_size)
+            self.whisper_initialized = True
+            logger.info("✅ Модель Whisper загружена и готова к работе")
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки модели Whisper: {e}")
+            self.whisper_initialized = False
+
+    async def transcribe_audio(self, audio_path: str, language: str = "ru") -> Dict[str, Any]:
+        """
+        Транскрипция аудио с использованием Whisper
+        """
+        if not self.whisper_initialized:
+            await self._initialize_whisper()
+
+        if not self.whisper_initialized:
+            return {
+                "success": False,
+                "text": "Модель Whisper не инициализирована",
+                "segments": [],
+                "language": language
+            }
+
+        try:
+            # === ДОБАВЛЕНО: Проверка существования файла ===
+            if not os.path.exists(audio_path):
+                logger.error(f"❌ Файл не найден: {audio_path}")
+                return {
+                    "success": False,
+                    "text": f"Файл не найден: {audio_path}",
+                    "segments": [],
+                    "language": language
+                }
+
+            # === ДОБАВЛЕНО: Проверка размера файла ===
+            file_size = os.path.getsize(audio_path)
+            if file_size == 0:
+                logger.error(f"❌ Файл пустой: {audio_path}")
+                return {
+                    "success": False,
+                    "text": "Файл пустой",
+                    "segments": [],
+                    "language": language
+                }
+
+            logger.info(
+                f"🎤 Начата транскрипция аудио: {audio_path} (размер: {file_size} байт)")  # === ДОБАВЛЕНО: логирование размера ===
+
+            # Выполняем транскрипцию
+            result = self.whisper_model.transcribe(
+                audio_path,
+                language=language,
+                verbose=False,
+                fp16=False
+            )
+
+            # Форматируем результат
+            transcription_result = {
+                "success": True,
+                "text": result["text"].strip(),
+                "segments": [
+                    {
+                        "start": segment["start"],
+                        "end": segment["end"],
+                        "text": segment["text"].strip(),
+                        "speaker": f"speaker_{i}"
+                    }
+                    for i, segment in enumerate(result.get("segments", []))
+                ],
+                "language": result.get("language", language),
+                "duration": result.get("duration", 0),
+                # === ДОБАВЛЕНО: дополнительная информация о файле ===
+                "file_path": audio_path,
+                "file_size": file_size
+            }
+
+            logger.info(f"✅ Транскрипция завершена. Длина текста: {len(transcription_result['text'])} символов")
+            return transcription_result
+
+        except Exception as e:
+            logger.error(
+                f"❌ Ошибка транскрипции файла {audio_path}: {e}")  # === ИЗМЕНЕНО: более детальное логирование ===
+            return {
+                "success": False,
+                "text": f"Ошибка транскрипции: {str(e)}",
+                "segments": [],
+                "language": language
+            }
+
+    async def transcribe_with_speaker_detection(self, audio_path: str, language: str = "ru",
+                                                num_speakers: int = None) -> Dict[str, Any]:
+        """
+        Транскрипция с базовым определением спикеров (упрощенная версия)
+
+        Args:
+            audio_path: путь к аудиофайлу
+            language: язык аудио
+            num_speakers: предполагаемое количество спикеров (опционально)
+        """
+        try:
+            # Сначала получаем базовую транскрипцию
+            transcription = await self.transcribe_audio(audio_path, language)
+
+            if not transcription["success"]:
+                return transcription
+
+            # Упрощенное определение спикеров на основе пауз
+            segments_with_speakers = await self._detect_speaker_changes(transcription["segments"])
+
+            transcription["segments"] = segments_with_speakers
+            transcription["speaker_count"] = len(set(segment["speaker"] for segment in segments_with_speakers))
+
+            return transcription
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка транскрипции с определением спикеров: {e}")
+            return await self.transcribe_audio(audio_path, language)
+
+    async def _detect_speaker_changes(self, segments: List[Dict], pause_threshold: float = 2.0) -> List[Dict]:
+        """
+        Упрощенное определение смены спикеров на основе пауз
+        """
+        if not segments:
+            return segments
+
+        segments_with_speakers = []
+        current_speaker = "speaker_0"
+        speaker_index = 0
+
+        for i, segment in enumerate(segments):
+            # Если это первый сегмент, используем первого спикера
+            if i == 0:
+                segment["speaker"] = current_speaker
+                segments_with_speakers.append(segment)
+                continue
+
+            # Проверяем паузу между сегментами
+            previous_segment = segments[i - 1]
+            pause_duration = segment["start"] - previous_segment["end"]
+
+            # Если пауза достаточно длинная, предполагаем смену спикера
+            if pause_duration > pause_threshold:
+                speaker_index += 1
+                current_speaker = f"speaker_{speaker_index}"
+
+            segment["speaker"] = current_speaker
+            segments_with_speakers.append(segment)
+
+        return segments_with_speakers
+
+    async def process_audio(self, audio_path: str, enable_transcription: bool = True) -> Dict[str, Any]:
+        """
+        Полная обработка аудио через Whisper и LM Studio
+
+        Args:
+            audio_path: путь к аудиофайлу
+            enable_transcription: выполнять ли транскрипцию через Whisper
+        """
+        try:
+            # Получаем базовую информацию об аудио
+            duration = librosa.get_duration(path=audio_path)
+
+            if enable_transcription and self.whisper_initialized:
+                # Используем Whisper для транскрипции
+                transcription_result = await self.transcribe_with_speaker_detection(audio_path)
+                transcription_text = transcription_result["text"]
+                speakers = transcription_result["segments"]
+            else:
+                # Fallback: используем LLM для генерации примерного текста
+                transcription_text = await self._generate_sample_transcription(duration)
+                speakers = []
+                transcription_result = {
+                    "success": True,
+                    "text": transcription_text,
+                    "segments": []
+                }
+
+            # Анализ содержания через LLM
+            analysis_result = await self.analyze_meeting_content(
+                transcription_text,
+                duration,
+                speakers
+            )
+
+            return {
+                "success": True,
+                "transcription": transcription_text,
+                "transcription_detail": transcription_result,
+                "analysis": analysis_result,
+                "duration": duration,
+                "processing_time": 0,
+                "whisper_used": enable_transcription and self.whisper_initialized
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки аудио: {e}")
+            return {
+                "success": False,
+                "transcription": "Ошибка обработки",
+                "transcription_detail": {"success": False, "text": "Ошибка обработки", "segments": []},
+                "analysis": self._create_fallback_analysis(),
+                "duration": 0,
+                "processing_time": 0,
+                "whisper_used": False
+            }
+
+    async def transcribe_and_analyze(self, audio_path: str, language: str = "ru") -> Dict[str, Any]:
+        """
+        Комплексная обработка: транскрипция + анализ
+
+        Args:
+            audio_path: путь к аудиофайлу
+            language: язык аудио
+        """
+        try:
+            # Шаг 1: Транскрипция через Whisper
+            transcription_result = await self.transcribe_audio(audio_path, language)
+
+            if not transcription_result["success"]:
+                return {
+                    "success": False,
+                    "error": "Транскрипция не удалась",
+                    "transcription": transcription_result
+                }
+
+            # Шаг 2: Анализ содержания через LLM
+            analysis_result = await self.analyze_meeting_content(
+                transcription_result["text"],
+                transcription_result.get("duration", 0),
+                transcription_result.get("segments", [])
+            )
+
+            return {
+                "success": True,
+                "transcription": transcription_result,
+                "analysis": analysis_result,
+                "duration": transcription_result.get("duration", 0)
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка комплексной обработки: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "transcription": {"success": False, "text": "", "segments": []},
+                "analysis": self._create_fallback_analysis()
+            }
+
+    def get_whisper_info(self) -> Dict[str, Any]:
+        """Получение информации о состоянии Whisper модели"""
+        return {
+            "initialized": self.whisper_initialized,
+            "model_size": self.whisper_model_size,
+            "available": self.whisper_model is not None
+        }
 
     async def _check_connection(self) -> bool:
         """Проверка подключения к LM Studio"""
@@ -64,7 +333,11 @@ class LLMProcessor:
         try:
             response = requests.get(f"{self.base_url}/models", timeout=10)
             if response.status_code == 200:
-                self.available_models = response.json().get('data', [])
+                data = response.json()
+                print("Полный ответ от сервера:", data)  # ← Добавьте это для отладки
+
+                # Попробуйте разные варианты извлечения данных
+                self.available_models = data.get('data', []) or data.get('models', []) or data
                 logger.info(f"📚 Доступно моделей: {len(self.available_models)}")
         except Exception as e:
             logger.warning(f"⚠️ Не удалось загрузить список моделей: {e}")
@@ -260,39 +533,6 @@ class LLMProcessor:
             "decisions": [],
             "water_content_ratio": 0.2
         }
-
-    async def process_audio(self, audio_path: str) -> Dict[str, Any]:
-        """
-        Полная обработка аудио через LM Studio
-        """
-        try:
-            # Получаем базовую информацию об аудио
-            duration = librosa.get_duration(path=audio_path)
-
-            # TODO: Здесь будет настоящая транскрипция
-            # Пока используем LLM для генерации примерного текста
-            transcription = await self._generate_sample_transcription(duration)
-
-            # Анализ содержания
-            analysis_result = await self.analyze_meeting_content(transcription, duration)
-
-            return {
-                "success": True,
-                "transcription": transcription,
-                "analysis": analysis_result,
-                "duration": duration,
-                "processing_time": 0
-            }
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка обработки аудио: {e}")
-            return {
-                "success": False,
-                "transcription": "Ошибка обработки",
-                "analysis": self._create_fallback_analysis(),
-                "duration": 0,
-                "processing_time": 0
-            }
 
     async def _generate_sample_transcription(self, duration: float) -> str:
         """Генерация примерной транскрипции (временное решение)"""

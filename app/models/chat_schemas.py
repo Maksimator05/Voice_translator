@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import List, Optional
 from enum import Enum
@@ -13,9 +13,9 @@ class MessageType(str, Enum):
     AUDIO_TRANSCRIPT = "audio_transcript"
 
 class ChatMessageBase(BaseModel):
-    content: str
+    content: str = Field(..., min_length=1, max_length=50000)  # 50k символов
     role: str
-    message_type: MessageType = MessageType.TEXT
+    message_type: str = "text"
 
 class ChatMessageCreate(ChatMessageBase):
     pass
@@ -49,3 +49,7 @@ class ChatSessionListResponse(BaseModel):
     updated_at: datetime
     last_message: Optional[str] = None
     message_count: int = 0
+
+class ChatAskRequest(BaseModel):
+    """Схема для запроса к AI в чате"""
+    message: str = Field(..., min_length=1, max_length=50000)  # 50k символов

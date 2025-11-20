@@ -1,35 +1,30 @@
 import sys
 import os
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, BackgroundTasks, Query
 from datetime import datetime
 import logging
-from typing import List
-import uuid
+from typing import List, Dict, Any
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from fastapi.middleware.cors import CORSMiddleware
+import uuid
 
-# Добавляем путь для импортов
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import settings
-
-# Импорты для аутентификации
 from app.auth.service import get_current_active_user, create_access_token, authenticate_user, get_password_hash
 from app.auth.schemas import UserCreate, UserLogin, Token, UserResponse
 from app.auth.models import User
 from app.database.connection import get_db, create_tables
-
-# Импорты для чатов
 from app.services.chat_service import ChatService
 from app.models.chat_schemas import (
     ChatSessionCreate,
     ChatSessionResponse,
     ChatMessageCreate,
     ChatMessageResponse,
-    ChatSessionListResponse,
-    SessionType
+    ChatSessionListResponse
 )
-from app.services.llm_processor import llm_processor
+from app.services.llm_processor import llm_processor, LLMProcessor
+from .models.chat_schemas import ChatAskRequest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,15 +34,16 @@ app = FastAPI(
     description=settings.DESCRIPTION,
     version=settings.VERSION,
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    max_request_size=50 * 1024 * 1024,  # 50MB вместо стандартных 1MB
 )
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_credentials=True, allow_headers=["*"])
 
-# Ленивая инициализация сервисов
+llm_processor = LLMProcessor()
 content_processor = None
 FileService = None
-
+processing_tasks = {}
 
 def get_content_processor():
     global content_processor
@@ -251,7 +247,7 @@ async def get_chat_messages(
 @app.post("/api/chats/{chat_id}/ask")
 async def ask_llm(
         chat_id: int,
-        request_data: dict,
+        request_data: ChatAskRequest,
         current_user: User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
@@ -259,9 +255,11 @@ async def ask_llm(
     Отправка сообщения AI и получение ответа
     """
     try:
-        user_message = request_data.get("message", "").strip()
+        user_message = request_data.message.strip()
         if not user_message:
             raise HTTPException(status_code=400, detail="Message cannot be empty")
+        if len(user_message) > 50000:
+            raise HTTPException(status_code=400, detail="Сообщение слишком длинное")
 
         chat_service = ChatService(db)
 
@@ -284,10 +282,15 @@ async def ask_llm(
         # Формируем промпт с историей
         context_messages = []
         for msg in chat_history:
-            context_messages.append({
-                "role": msg.role,
-                "content": msg.content
-            })
+            # Проверяем что роль корректная и контент не пустой
+            if (msg.role in ["user", "assistant", "system"] and
+                    msg.content and
+                    isinstance(msg.content, str) and
+                    msg.content.strip() != "string"):
+                context_messages.append({
+                    "role": msg.role,
+                    "content": msg.content[:1000]
+                })
 
         # Получаем ответ от LLM
         llm_processor = get_llm_processor()
@@ -319,7 +322,6 @@ async def ask_llm(
 @app.get("/")
 async def root():
     """Корневой эндпоинт"""
-    llm_processor = get_llm_processor()
 
     return {
         "message": "Intelligent Meeting Analyzer API с аутентификацией работает!",
@@ -374,6 +376,349 @@ async def health_check():
             "file_processing": "available"
         }
     }
+
+
+# ===== ЭНДПОИНТЫ ДЛЯ AUDIO PROCESSING =====
+
+@app.get("/health")
+async def health_check():
+    """Проверка статуса сервиса"""
+    whisper_info = llm_processor.get_whisper_info()
+    lm_status = llm_processor.is_connected
+
+    return {
+        "status": "healthy",
+        "whisper_available": whisper_info["initialized"],
+        "lm_studio_available": lm_status,
+        "whisper_model": whisper_info["model_size"],
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.post("/api/audio/upload")
+async def upload_audio(
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(..., description="Аудиофайл для обработки (MP3, WAV, M4A, FLAC)"),
+        language: str = Query("ru", description="Язык аудио (ru, en, etc.)"),
+        enable_analysis: bool = Query(True, description="Включить анализ содержания")
+):
+    """
+    Загрузка и обработка аудиофайла (транскрипция + анализ)
+    """
+    try:
+        # Проверяем тип файла
+        allowed_extensions = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.mpeg', '.webm'}  # === ДОБАВЛЕНО: .webm ===
+        file_extension = os.path.splitext(file.filename)[1].lower()
+
+        if file_extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Неподдерживаемый формат файла. Разрешены: {', '.join(allowed_extensions)}"
+            )
+
+        # Проверяем размер файла (макс 100MB)
+        max_size = 100 * 1024 * 1024
+
+        # === ИЗМЕНЕНО: Читаем содержимое файла сразу ===
+        content = await file.read()
+        file_size = len(content)
+
+        if file_size > max_size:
+            raise HTTPException(
+                status_code=400,
+                detail="Файл слишком большой. Максимальный размер: 100MB"
+            )
+
+        # === ДОБАВЛЕНО: Проверка на пустой файл ===
+        if file_size == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Файл пустой"
+            )
+
+        # Генерируем ID задачи
+        task_id = str(uuid.uuid4())
+
+        # Сохраняем файл временно
+        temp_filename = f"temp_{task_id}{file_extension}"
+        temp_filepath = os.path.join("temp_audio", temp_filename)
+
+        # Создаем временную директорию если нет
+        os.makedirs("temp_audio", exist_ok=True)
+
+        # === ИЗМЕНЕНО: Сохраняем из памяти ===
+        with open(temp_filepath, "wb") as buffer:
+            buffer.write(content)
+
+        logger.info(
+            f"📥 Файл сохранен: {temp_filepath} (размер: {file_size} байт)")  # === ДОБАВЛЕНО: логирование размера ===
+
+        # Сохраняем информацию о задаче
+        processing_tasks[task_id] = {
+            "status": "processing",
+            "filename": file.filename,
+            # === ДОБАВЛЕНО: путь и размер файла ===
+            "file_path": temp_filepath,
+            "file_size": file_size,
+            "language": language,
+            "enable_analysis": enable_analysis,
+            "started_at": datetime.now().isoformat(),
+            "result": None
+        }
+
+        # Добавляем фоновую задачу
+        background_tasks.add_task(
+            process_audio_background,
+            task_id,
+            temp_filepath,
+            language,
+            enable_analysis
+        )
+
+        return {
+            "task_id": task_id,
+            "status": "processing",
+            "message": "Аудио принято в обработку",
+            "filename": file.filename,
+            # === ДОБАВЛЕНО: информация о размере ===
+            "file_size": file_size,
+            "language": language
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки аудио: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка загрузки аудио: {str(e)}")
+
+@app.get("/api/audio/tasks/{task_id}")
+async def get_task_status(task_id: str):
+    """
+    Получение статуса задачи обработки аудио
+    """
+    if task_id not in processing_tasks:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    return processing_tasks[task_id]
+
+
+@app.get("/api/audio/tasks")
+async def get_all_tasks():
+    """
+    Получение списка всех задач обработки
+    """
+    return {
+        "total_tasks": len(processing_tasks),
+        "tasks": processing_tasks
+    }
+
+
+@app.post("/api/audio/transcribe")
+async def transcribe_audio_only(
+        file: UploadFile = File(..., description="Аудиофайл для транскрипции"),
+        language: str = Query("ru", description="Язык аудио"),
+        detect_speakers: bool = Query(True, description="Определять спикеров")
+):
+    """
+    Только транскрипция аудио без анализа содержания
+    """
+    # Проверяем тип файла
+    allowed_extensions = {'.wav', '.mp3', '.m4a', '.flac', '.ogg'}
+    file_extension = os.path.splitext(file.filename)[1].lower()
+
+    if file_extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неподдерживаемый формат файла"
+        )
+
+    # Сохраняем временный файл
+    task_id = str(uuid.uuid4())
+    temp_filename = f"transcribe_{task_id}{file_extension}"
+    temp_filepath = os.path.join("temp_audio", temp_filename)
+    os.makedirs("temp_audio", exist_ok=True)
+
+    try:
+        with open(temp_filepath, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+
+        logger.info(f"🎤 Начата транскрипция файла: {file.filename}")
+
+        # Выполняем транскрипцию
+        if detect_speakers:
+            result = await llm_processor.transcribe_with_speaker_detection(temp_filepath, language)
+        else:
+            result = await llm_processor.transcribe_audio(temp_filepath, language)
+
+        # Удаляем временный файл
+        try:
+            os.remove(temp_filepath)
+        except:
+            pass
+
+        logger.info(f"✅ Транскрипция завершена: {len(result.get('text', ''))} символов")
+
+        return result
+
+    except Exception as e:
+        # Удаляем временный файл при ошибке
+        try:
+            os.remove(temp_filepath)
+        except:
+            pass
+        logger.error(f"❌ Ошибка транскрипции: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка транскрипции: {str(e)}")
+
+
+@app.post("/api/audio/analyze")
+async def analyze_transcription(analysis_request: Dict[str, Any]):
+    """
+    Анализ готовой транскрипции через LLM
+    """
+    try:
+        transcription = analysis_request.get("transcription", "")
+        duration = analysis_request.get("duration", 0)
+        speakers = analysis_request.get("speakers", [])
+
+        if not transcription:
+            raise HTTPException(status_code=400, detail="Транскрипция не может быть пустой")
+
+        logger.info(f"🧠 Начат анализ транскрипции: {len(transcription)} символов")
+
+        result = await llm_processor.analyze_meeting_content(transcription, duration, speakers)
+
+        logger.info("✅ Анализ транскрипции завершен")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка анализа транскрипции: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")
+
+
+@app.get("/api/system/info")
+async def system_info():
+    """
+    Получение подробной информации о системе
+    """
+    whisper_info = llm_processor.get_whisper_info()
+
+    # Статистика задач
+    active_tasks = len(
+        [t for t in processing_tasks.values() if t["status"] in ["processing", "transcribing", "analyzing"]])
+    completed_tasks = len([t for t in processing_tasks.values() if t["status"] == "completed"])
+    error_tasks = len([t for t in processing_tasks.values() if t["status"] == "error"])
+
+    return {
+        "whisper": whisper_info,
+        "lm_studio": {
+            "connected": llm_processor.is_connected,
+            "base_url": llm_processor.base_url,
+            "model": llm_processor.model,
+            "available_models": len(llm_processor.available_models)
+        },
+        "processing_tasks": {
+            "active": active_tasks,
+            "completed": completed_tasks,
+            "errors": error_tasks,
+            "total": len(processing_tasks)
+        },
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# ===== ФОНОВЫЕ ЗАДАЧИ =====
+
+async def process_audio_background(task_id: str, filepath: str, language: str, enable_analysis: bool):
+    """
+    Фоновая обработка аудиофайла
+    """
+    try:
+        # Обновляем статус задачи
+        processing_tasks[task_id]["status"] = "transcribing"
+
+        # Выполняем транскрипцию
+        transcription_result = await llm_processor.transcribe_with_speaker_detection(filepath, language)
+
+        if not transcription_result["success"]:
+            processing_tasks[task_id].update({
+                "status": "error",
+                "result": {"error": "Транскрипция не удалась"},
+                "completed_at": datetime.now().isoformat()
+            })
+            return
+
+        # Если анализ отключен, возвращаем только транскрипцию
+        if not enable_analysis:
+            final_result = {
+                "success": True,
+                "task_id": task_id,
+                "filename": os.path.basename(filepath),
+                "transcription": transcription_result,
+                "analysis": None,
+                "processing_time": datetime.now().isoformat()
+            }
+
+            processing_tasks[task_id].update({
+                "status": "completed",
+                "result": final_result,
+                "completed_at": datetime.now().isoformat()
+            })
+
+            # Удаляем временный файл
+            try:
+                os.remove(filepath)
+            except:
+                pass
+            return
+
+        # Обновляем статус задачи
+        processing_tasks[task_id]["status"] = "analyzing"
+
+        # Анализируем содержание
+        analysis_result = await llm_processor.analyze_meeting_content(
+            transcription_result["text"],
+            transcription_result.get("duration", 0),
+            transcription_result.get("segments", [])
+        )
+
+        # Формируем финальный результат
+        final_result = {
+            "success": True,
+            "task_id": task_id,
+            "filename": os.path.basename(filepath),
+            "transcription": transcription_result,
+            "analysis": analysis_result,
+            "processing_time": datetime.now().isoformat()
+        }
+
+        # Сохраняем результат
+        processing_tasks[task_id].update({
+            "status": "completed",
+            "result": final_result,
+            "completed_at": datetime.now().isoformat()
+        })
+
+        logger.info(f"✅ Задача {task_id} завершена успешно")
+
+        # Удаляем временный файл
+        try:
+            os.remove(filepath)
+        except:
+            pass
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки аудио (task {task_id}): {e}")
+        processing_tasks[task_id].update({
+            "status": "error",
+            "result": {"error": str(e)},
+            "completed_at": datetime.now().isoformat()
+        })
+
+        # Удаляем временный файл при ошибке
+        try:
+            os.remove(filepath)
+        except:
+            pass
 
 
 # ОБРАБОТЧИКИ ОШИБОК
