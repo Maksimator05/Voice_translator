@@ -86,17 +86,29 @@ class LLMProcessor:
             }
 
         try:
-            # === ДОБАВЛЕНО: Проверка существования файла ===
-            if not os.path.exists(audio_path):
-                logger.error(f"❌ Файл не найден: {audio_path}")
-                return {
-                    "success": False,
-                    "text": f"Файл не найден: {audio_path}",
-                    "segments": [],
-                    "language": language
-                }
+            # === ИСПРАВЛЕНИЕ: Нормализация пути для Windows ===
+            audio_path = os.path.abspath(audio_path)
+            audio_path = audio_path.replace('\\', '/')  # Для консистентности
 
-            # === ДОБАВЛЕНО: Проверка размера файла ===
+            logger.info(f"🎤 Начата транскрипция аудио: {audio_path}")
+
+            # === ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА СУЩЕСТВОВАНИЯ ФАЙЛА ===
+            if not os.path.exists(audio_path):
+                logger.error(f"❌ Файл не существует: {audio_path}")
+                # Попробуем найти файл альтернативными путями
+                alt_path = audio_path.replace('/', '\\')
+                if os.path.exists(alt_path):
+                    audio_path = alt_path
+                    logger.info(f"✅ Файл найден по альтернативному пути: {audio_path}")
+                else:
+                    return {
+                        "success": False,
+                        "text": f"Файл не найден: {audio_path}",
+                        "segments": [],
+                        "language": language
+                    }
+
+            # === ПРОВЕРКА РАЗМЕРА ФАЙЛА ===
             file_size = os.path.getsize(audio_path)
             if file_size == 0:
                 logger.error(f"❌ Файл пустой: {audio_path}")
@@ -107,10 +119,10 @@ class LLMProcessor:
                     "language": language
                 }
 
-            logger.info(
-                f"🎤 Начата транскрипция аудио: {audio_path} (размер: {file_size} байт)")  # === ДОБАВЛЕНО: логирование размера ===
+            logger.info(f"📊 Размер файла: {file_size} байт")
 
-            # Выполняем транскрипцию
+            # === ВЫПОЛНЯЕМ ТРАНСКРИПЦИЮ ===
+            logger.info("🔄 Запуск транскрипции Whisper...")
             result = self.whisper_model.transcribe(
                 audio_path,
                 language=language,
@@ -133,7 +145,6 @@ class LLMProcessor:
                 ],
                 "language": result.get("language", language),
                 "duration": result.get("duration", 0),
-                # === ДОБАВЛЕНО: дополнительная информация о файле ===
                 "file_path": audio_path,
                 "file_size": file_size
             }
@@ -142,8 +153,12 @@ class LLMProcessor:
             return transcription_result
 
         except Exception as e:
-            logger.error(
-                f"❌ Ошибка транскрипции файла {audio_path}: {e}")  # === ИЗМЕНЕНО: более детальное логирование ===
+            logger.error(f"❌ Ошибка транскрипции файла {audio_path}: {str(e)}")
+            # Детальная диагностика
+            if os.path.exists(audio_path):
+                logger.info(f"📁 Файл существует, но ошибка транскрипции")
+            else:
+                logger.info(f"📁 Файл не существует после проверки")
             return {
                 "success": False,
                 "text": f"Ошибка транскрипции: {str(e)}",

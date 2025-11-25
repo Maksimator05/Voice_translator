@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Boolean, JSON
 from sqlalchemy.sql import func
 from app.database.connection import Base
 
@@ -25,5 +25,8 @@ class ChatMessage(Base):
     role = Column(String(50))
     content = Column(Text)
     message_type = Column(String(50), default="text")
+    audio_filename = Column(String(255), nullable=True)  # 🆕 Путь к аудио файлу
+    audio_transcription = Column(Text, nullable=True)  # 🆕 Транскрипция аудио
+    audio_analysis = Column(JSON, nullable=True)  # 🆕 Анализ аудио
     tokens_used = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

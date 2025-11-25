@@ -1,6 +1,7 @@
+from fastapi import UploadFile
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from enum import Enum
 
 class SessionType(str, Enum):
@@ -10,21 +11,27 @@ class SessionType(str, Enum):
 
 class MessageType(str, Enum):
     TEXT = "text"
-    AUDIO_TRANSCRIPT = "audio_transcript"
+    AUDIO_TRANSCRIPT = "audio"
 
 class ChatMessageBase(BaseModel):
     content: str = Field(..., min_length=1, max_length=50000)  # 50k символов
     role: str
-    message_type: str = "text"
+    message_type: MessageType = MessageType.TEXT  # Используйте Enum
+    audio_filename: Optional[str] = None
+    audio_transcription: Optional[str] = None
 
 class ChatMessageCreate(ChatMessageBase):
-    pass
+    audio_filename: Optional[str] = None
+    audio_transcription: Optional[str] = None
 
 class ChatMessageResponse(ChatMessageBase):
     id: int
     chat_session_id: int
     tokens_used: int = 0
     created_at: datetime
+    audio_filename: Optional[str] = None  # 🆕
+    audio_transcription: Optional[str] = None  # 🆕
+    audio_analysis: Optional[Dict[str, Any]] = None
 
 class ChatSessionBase(BaseModel):
     title: str = "Новый чат"
@@ -53,3 +60,4 @@ class ChatSessionListResponse(BaseModel):
 class ChatAskRequest(BaseModel):
     """Схема для запроса к AI в чате"""
     message: str = Field(..., min_length=1, max_length=50000)  # 50k символов
+    audio_data: Optional[UploadFile] = None

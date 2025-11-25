@@ -1,13 +1,16 @@
+import base64
 import sys
 import os
-from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, BackgroundTasks, Query
+import tempfile
+
+from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, BackgroundTasks, Query, Form, Path
 from datetime import datetime
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
-import uuid
+
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import settings
@@ -24,7 +27,7 @@ from app.models.chat_schemas import (
     ChatSessionListResponse
 )
 from app.services.llm_processor import llm_processor, LLMProcessor
-from .models.chat_schemas import ChatAskRequest
+from app.services.audio_processor import audio_processor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -216,7 +219,7 @@ async def add_message(
     """Добавление сообщения в чат"""
     try:
         chat_service = ChatService(db)
-        message = chat_service.add_message_to_chat(chat_id, current_user.id, message_data)
+        message = await chat_service.add_message_to_chat(chat_id, current_user.id, message_data)
         return message
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -225,76 +228,125 @@ async def add_message(
         raise HTTPException(status_code=500, detail="Ошибка добавления сообщения")
 
 
-@app.get("/api/chats/{chat_id}/messages", response_model=List[ChatMessageResponse])
-async def get_chat_messages(
+@app.post("/api/chats/{chat_id}/messages", response_model=ChatMessageResponse, operation_id="add_message_to_chat")
+async def add_message(
         chat_id: int,
+        message_data: ChatMessageCreate,
         current_user: User = Depends(get_current_active_user),
-        db: Session = Depends(get_db),
-        limit: int = 50
+        db: Session = Depends(get_db)
 ):
-    """Получение сообщений чата"""
+    """Добавление сообщения с опциональным аудио"""
     try:
         chat_service = ChatService(db)
-        messages = chat_service.get_chat_messages(chat_id, current_user.id, limit)
-        return messages
+
+        audio_file_path = None
+
+        # Обрабатываем аудио если есть
+        if message_data.audio_data:
+            try:
+                # Декодируем base64 аудио
+                audio_bytes = base64.b64decode(message_data.audio_data.split(',')[1])
+
+                # Сохраняем во временный файл
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
+                    temp_file.write(audio_bytes)
+                    audio_file_path = temp_file.name
+
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки аудио: {e}")
+                raise HTTPException(status_code=400, detail="Неверный формат аудио")
+
+        message = await chat_service.add_message_to_chat(
+            chat_id,
+            current_user.id,
+            message_data,
+            audio_file_path
+        )
+
+        # Удаляем временный файл если он был создан
+        if audio_file_path and os.path.exists(audio_file_path):
+            os.unlink(audio_file_path)
+
+        return message
+
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"❌ Ошибка получения сообщений: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка получения сообщений")
+        logger.error(f"❌ Ошибка добавления сообщения: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка добавления сообщения")
 
 
 @app.post("/api/chats/{chat_id}/ask")
 async def ask_llm(
         chat_id: int,
-        request_data: ChatAskRequest,
+        message: str = Form(None),
+        audio_file: Optional[UploadFile] = File(None),
         current_user: User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
-    """
-    Отправка сообщения AI и получение ответа
-    """
     try:
-        user_message = request_data.message.strip()
-        if not user_message:
-            raise HTTPException(status_code=400, detail="Message cannot be empty")
-        if len(user_message) > 50000:
-            raise HTTPException(status_code=400, detail="Сообщение слишком длинное")
+        if not message and not audio_file:
+            raise HTTPException(status_code=400, detail="Нужно сообщение или аудио")
 
         chat_service = ChatService(db)
 
-        # Проверяем существование чата
-        chat_session = chat_service.get_chat_session(chat_id, current_user.id)
-        if not chat_session:
+        if not chat_service.get_chat_session(chat_id, current_user.id):
             raise HTTPException(status_code=404, detail="Чат не найден")
 
-        # Сохраняем сообщение пользователя
-        user_msg_data = ChatMessageCreate(
-            content=user_message,
-            role="user",
-            message_type="text"
-        )
-        user_message_obj = chat_service.add_message_to_chat(chat_id, current_user.id, user_msg_data)
+        audio_transcription = None
 
-        # Получаем историю сообщений для контекста
-        chat_history = chat_service.get_chat_messages(chat_id, current_user.id, limit=20)
+        # Обрабатываем аудиофайл если он есть
+        if audio_file and audio_file.filename:
+
+            llm_processor = get_llm_processor()
+            audio_transcription = await audio_processor.process_audio_file(audio_file, llm_processor)
+
+        # Создаем сообщение
+        message_content = message or ""
+        if audio_transcription and not message_content:
+            message_content = "[Аудиосообщение]"
+
+        message_data = ChatMessageCreate(
+            content=message_content,
+            role="user",
+            message_type="audio" if audio_file else "text",
+            audio_filename=audio_file.filename if audio_file else None,
+            audio_transcription=audio_transcription
+        )
+
+        user_message_obj = await chat_service.add_message_to_chat(
+            chat_id,
+            current_user.id,
+            message_data
+        )
+
+        # Формируем контент для AI
+        ai_prompt = message or ""
+        if audio_transcription and not audio_transcription.startswith("[Ошибка:") and audio_transcription not in [
+            "[Транскрипция не удалась]", "[Транскрипция пустая]"]:
+            if ai_prompt:
+                ai_prompt += f"\n\nТранскрипция аудио: {audio_transcription}"
+            else:
+                ai_prompt = f"Транскрипция аудио: {audio_transcription}"
+
+        # Получаем историю сообщений
+        try:
+            chat_history = chat_service.get_chat_messages(chat_id, current_user.id, limit=10)
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения истории чата: {e}")
+            chat_history = []
 
         # Формируем промпт с историей
         context_messages = []
         for msg in chat_history:
-            # Проверяем что роль корректная и контент не пустой
-            if (msg.role in ["user", "assistant", "system"] and
-                    msg.content and
-                    isinstance(msg.content, str) and
-                    msg.content.strip() != "string"):
-                context_messages.append({
-                    "role": msg.role,
-                    "content": msg.content[:1000]
-                })
+            context_messages.append({
+                "role": msg.role,
+                "content": msg.content
+            })
 
         # Получаем ответ от LLM
         llm_processor = get_llm_processor()
-        ai_response = await llm_processor.generate_chat_response(user_message, context_messages)
+        ai_response = await llm_processor.generate_chat_response(ai_prompt, context_messages)
 
         # Сохраняем ответ AI
         ai_msg_data = ChatMessageCreate(
@@ -302,12 +354,13 @@ async def ask_llm(
             role="assistant",
             message_type="text"
         )
-        ai_message_obj = chat_service.add_message_to_chat(chat_id, current_user.id, ai_msg_data)
+        ai_message_obj = await chat_service.add_message_to_chat(chat_id, current_user.id, ai_msg_data)
 
         return {
             "user_message": user_message_obj,
             "ai_response": ai_message_obj,
-            "chat_id": chat_id
+            "chat_id": chat_id,
+            "audio_transcription": audio_transcription
         }
 
     except HTTPException:
@@ -315,6 +368,7 @@ async def ask_llm(
     except Exception as e:
         logger.error(f"❌ Ошибка в AI чате: {e}")
         raise HTTPException(status_code=500, detail="Ошибка обработки запроса")
+
 
 
 # ОБЩИЕ ЭНДПОИНТЫ
@@ -375,254 +429,6 @@ async def health_check():
             "llm_processor": "available",
             "file_processing": "available"
         }
-    }
-
-
-# ===== ЭНДПОИНТЫ ДЛЯ AUDIO PROCESSING =====
-
-@app.get("/health")
-async def health_check():
-    """Проверка статуса сервиса"""
-    whisper_info = llm_processor.get_whisper_info()
-    lm_status = llm_processor.is_connected
-
-    return {
-        "status": "healthy",
-        "whisper_available": whisper_info["initialized"],
-        "lm_studio_available": lm_status,
-        "whisper_model": whisper_info["model_size"],
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-@app.post("/api/audio/upload")
-async def upload_audio(
-        background_tasks: BackgroundTasks,
-        file: UploadFile = File(..., description="Аудиофайл для обработки (MP3, WAV, M4A, FLAC)"),
-        language: str = Query("ru", description="Язык аудио (ru, en, etc.)"),
-        enable_analysis: bool = Query(True, description="Включить анализ содержания")
-):
-    """
-    Загрузка и обработка аудиофайла (транскрипция + анализ)
-    """
-    try:
-        # Проверяем тип файла
-        allowed_extensions = {'.wav', '.mp3', '.m4a', '.flac', '.ogg', '.mpeg', '.webm'}  # === ДОБАВЛЕНО: .webm ===
-        file_extension = os.path.splitext(file.filename)[1].lower()
-
-        if file_extension not in allowed_extensions:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Неподдерживаемый формат файла. Разрешены: {', '.join(allowed_extensions)}"
-            )
-
-        # Проверяем размер файла (макс 100MB)
-        max_size = 100 * 1024 * 1024
-
-        # === ИЗМЕНЕНО: Читаем содержимое файла сразу ===
-        content = await file.read()
-        file_size = len(content)
-
-        if file_size > max_size:
-            raise HTTPException(
-                status_code=400,
-                detail="Файл слишком большой. Максимальный размер: 100MB"
-            )
-
-        # === ДОБАВЛЕНО: Проверка на пустой файл ===
-        if file_size == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Файл пустой"
-            )
-
-        # Генерируем ID задачи
-        task_id = str(uuid.uuid4())
-
-        # Сохраняем файл временно
-        temp_filename = f"temp_{task_id}{file_extension}"
-        temp_filepath = os.path.join("temp_audio", temp_filename)
-
-        # Создаем временную директорию если нет
-        os.makedirs("temp_audio", exist_ok=True)
-
-        # === ИЗМЕНЕНО: Сохраняем из памяти ===
-        with open(temp_filepath, "wb") as buffer:
-            buffer.write(content)
-
-        logger.info(
-            f"📥 Файл сохранен: {temp_filepath} (размер: {file_size} байт)")  # === ДОБАВЛЕНО: логирование размера ===
-
-        # Сохраняем информацию о задаче
-        processing_tasks[task_id] = {
-            "status": "processing",
-            "filename": file.filename,
-            # === ДОБАВЛЕНО: путь и размер файла ===
-            "file_path": temp_filepath,
-            "file_size": file_size,
-            "language": language,
-            "enable_analysis": enable_analysis,
-            "started_at": datetime.now().isoformat(),
-            "result": None
-        }
-
-        # Добавляем фоновую задачу
-        background_tasks.add_task(
-            process_audio_background,
-            task_id,
-            temp_filepath,
-            language,
-            enable_analysis
-        )
-
-        return {
-            "task_id": task_id,
-            "status": "processing",
-            "message": "Аудио принято в обработку",
-            "filename": file.filename,
-            # === ДОБАВЛЕНО: информация о размере ===
-            "file_size": file_size,
-            "language": language
-        }
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки аудио: {e}")
-        raise HTTPException(status_code=500, detail=f"Ошибка загрузки аудио: {str(e)}")
-
-@app.get("/api/audio/tasks/{task_id}")
-async def get_task_status(task_id: str):
-    """
-    Получение статуса задачи обработки аудио
-    """
-    if task_id not in processing_tasks:
-        raise HTTPException(status_code=404, detail="Задача не найдена")
-
-    return processing_tasks[task_id]
-
-
-@app.get("/api/audio/tasks")
-async def get_all_tasks():
-    """
-    Получение списка всех задач обработки
-    """
-    return {
-        "total_tasks": len(processing_tasks),
-        "tasks": processing_tasks
-    }
-
-
-@app.post("/api/audio/transcribe")
-async def transcribe_audio_only(
-        file: UploadFile = File(..., description="Аудиофайл для транскрипции"),
-        language: str = Query("ru", description="Язык аудио"),
-        detect_speakers: bool = Query(True, description="Определять спикеров")
-):
-    """
-    Только транскрипция аудио без анализа содержания
-    """
-    # Проверяем тип файла
-    allowed_extensions = {'.wav', '.mp3', '.m4a', '.flac', '.ogg'}
-    file_extension = os.path.splitext(file.filename)[1].lower()
-
-    if file_extension not in allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Неподдерживаемый формат файла"
-        )
-
-    # Сохраняем временный файл
-    task_id = str(uuid.uuid4())
-    temp_filename = f"transcribe_{task_id}{file_extension}"
-    temp_filepath = os.path.join("temp_audio", temp_filename)
-    os.makedirs("temp_audio", exist_ok=True)
-
-    try:
-        with open(temp_filepath, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
-
-        logger.info(f"🎤 Начата транскрипция файла: {file.filename}")
-
-        # Выполняем транскрипцию
-        if detect_speakers:
-            result = await llm_processor.transcribe_with_speaker_detection(temp_filepath, language)
-        else:
-            result = await llm_processor.transcribe_audio(temp_filepath, language)
-
-        # Удаляем временный файл
-        try:
-            os.remove(temp_filepath)
-        except:
-            pass
-
-        logger.info(f"✅ Транскрипция завершена: {len(result.get('text', ''))} символов")
-
-        return result
-
-    except Exception as e:
-        # Удаляем временный файл при ошибке
-        try:
-            os.remove(temp_filepath)
-        except:
-            pass
-        logger.error(f"❌ Ошибка транскрипции: {e}")
-        raise HTTPException(status_code=500, detail=f"Ошибка транскрипции: {str(e)}")
-
-
-@app.post("/api/audio/analyze")
-async def analyze_transcription(analysis_request: Dict[str, Any]):
-    """
-    Анализ готовой транскрипции через LLM
-    """
-    try:
-        transcription = analysis_request.get("transcription", "")
-        duration = analysis_request.get("duration", 0)
-        speakers = analysis_request.get("speakers", [])
-
-        if not transcription:
-            raise HTTPException(status_code=400, detail="Транскрипция не может быть пустой")
-
-        logger.info(f"🧠 Начат анализ транскрипции: {len(transcription)} символов")
-
-        result = await llm_processor.analyze_meeting_content(transcription, duration, speakers)
-
-        logger.info("✅ Анализ транскрипции завершен")
-
-        return result
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка анализа транскрипции: {e}")
-        raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")
-
-
-@app.get("/api/system/info")
-async def system_info():
-    """
-    Получение подробной информации о системе
-    """
-    whisper_info = llm_processor.get_whisper_info()
-
-    # Статистика задач
-    active_tasks = len(
-        [t for t in processing_tasks.values() if t["status"] in ["processing", "transcribing", "analyzing"]])
-    completed_tasks = len([t for t in processing_tasks.values() if t["status"] == "completed"])
-    error_tasks = len([t for t in processing_tasks.values() if t["status"] == "error"])
-
-    return {
-        "whisper": whisper_info,
-        "lm_studio": {
-            "connected": llm_processor.is_connected,
-            "base_url": llm_processor.base_url,
-            "model": llm_processor.model,
-            "available_models": len(llm_processor.available_models)
-        },
-        "processing_tasks": {
-            "active": active_tasks,
-            "completed": completed_tasks,
-            "errors": error_tasks,
-            "total": len(processing_tasks)
-        },
-        "timestamp": datetime.now().isoformat()
     }
 
 

@@ -1,4 +1,6 @@
 import logging
+import os
+import uuid
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -149,7 +151,8 @@ class ChatService:
             logger.error(f"❌ Ошибка получения чата {chat_id}: {e}")
             raise
 
-    def add_message_to_chat(self, chat_id: int, user_id: int, message_data: ChatMessageCreate) -> ChatMessageResponse:
+    async def add_message_to_chat(self, chat_id: int, user_id: int, message_data: ChatMessageCreate,
+                                  audio_file_path=None) -> ChatMessageResponse:
         """Добавление сообщения в чат"""
         try:
             # Проверяем существование чата и права доступа
@@ -160,8 +163,28 @@ class ChatService:
             if not chat_session:
                 raise ValueError("Чат не найден или нет доступа")
 
+            # Обрабатываем аудио если есть
+            audio_filename = None
+            audio_transcription = None
+            audio_analysis = None
+
+            if audio_file_path and os.path.exists(audio_file_path):
+                # Сохраняем аудио файл
+                audio_filename = f"audio_{uuid.uuid4().hex[:8]}.wav"
+                audio_save_path = os.path.join("uploads", audio_filename)
+                os.rename(audio_file_path, audio_save_path)
+
+                # Транскрибируем и анализируем аудио
+                from app.services.llm_processor import llm_processor
+                audio_result = await llm_processor.process_audio(audio_save_path)
+
+                if audio_result["success"]:
+                    audio_transcription = audio_result["transcription"]
+                    audio_analysis = audio_result["analysis"]
+
             # Конвертируем Enum в строку
-            message_type_str = message_data.message_type.value
+            message_type_str = message_data.message_type
+
 
             # Создаем сообщение
             db_message = ChatMessage(
@@ -183,6 +206,7 @@ class ChatService:
             logger.info(f"✅ Добавлено сообщение в чат {chat_id}, роль: {message_data.role}")
 
             # В ответе используем оригинальный Enum
+            from app.models.chat_schemas import MessageType
             return ChatMessageResponse(
                 id=db_message.id,
                 chat_session_id=db_message.chat_session_id,
