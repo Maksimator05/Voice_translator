@@ -64,7 +64,7 @@ class ContentProcessor:
             logger.error(f"❌ Ошибка обработки содержания: {e}")
             return self._create_fallback_analysis()
 
-    async def _local_content_analysis(self, transcription: str, duration: float, segments: List[Dict] = None) -> Dict[
+    async def _local_content_analysis(self, transcription: str) -> Dict[
         str, Any]:
         """Локальный анализ содержания если LLM недоступен"""
         try:

@@ -163,11 +163,6 @@ class ChatService:
             if not chat_session:
                 raise ValueError("Чат не найден или нет доступа")
 
-            # Обрабатываем аудио если есть
-            audio_filename = None
-            audio_transcription = None
-            audio_analysis = None
-
             if audio_file_path and os.path.exists(audio_file_path):
                 # Сохраняем аудио файл
                 audio_filename = f"audio_{uuid.uuid4().hex[:8]}.wav"

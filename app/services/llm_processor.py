@@ -166,8 +166,7 @@ class LLMProcessor:
                 "language": language
             }
 
-    async def transcribe_with_speaker_detection(self, audio_path: str, language: str = "ru",
-                                                num_speakers: int = None) -> Dict[str, Any]:
+    async def transcribe_with_speaker_detection(self, audio_path: str, language: str = "ru" ) -> Dict[str, Any]:
         """
         Транскрипция с базовым определением спикеров (упрощенная версия)
 

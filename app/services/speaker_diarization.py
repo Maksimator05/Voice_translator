@@ -1,4 +1,3 @@
-import os
 import logging
 from typing import List, Dict, Any
 from dotenv import load_dotenv
@@ -25,7 +24,7 @@ class SimpleDiarizationService:
         logger.info("✅ Упрощенный сервис диаризации инициализирован")
 
     def is_ready(self) -> bool:
-        return True  # Всегда готов, т.к. есть fallback
+        return True
 
     def diarize_audio(self, audio_path: str) -> List[Dict[str, Any]]:
         """
@@ -34,9 +33,6 @@ class SimpleDiarizationService:
         try:
             # Получаем длительность аудио
             duration = self.audio_processor.get_audio_duration(audio_path)
-
-            # Пока используем заглушку для транскрипции
-            # TODO: Реализовать настоящую транскрипцию
             transcription = "Пример текста транскрипции для демонстрации."
 
             # Диаризация через LLM

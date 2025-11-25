@@ -3,10 +3,10 @@ import sys
 import os
 import tempfile
 
-from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, BackgroundTasks, Query, Form, Path
+from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, Form
 from datetime import datetime
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,14 +60,6 @@ def get_content_processor():
 def get_llm_processor():
     """Основной процессор для всех AI задач"""
     return llm_processor
-
-
-def get_file_service():
-    global FileService
-    if FileService is None:
-        from app.services.file_service import FileService as FS
-        FileService = FS
-    return FileService
 
 
 @app.on_event("startup")
@@ -419,7 +411,6 @@ async def root():
 @app.get("/api/health")
 async def health_check():
     """Проверка здоровья сервиса"""
-    llm_processor = get_llm_processor()
 
     return {
         "status": "healthy",

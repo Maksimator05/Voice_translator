@@ -1,24 +1,5 @@
 import logging
-from typing import Dict, Any, List
-
-logger = logging.getLogger(__name__)
-
-# services/meeting_analyzer.py
-import logging
-from typing import Dict, Any, List
-from .speaker_diarization import SimpleDiarizationService
-from .content_processor import ContentProcessor
-
-logger = logging.getLogger(__name__)
-
-import logging
 from typing import Dict, Any, List, Optional
-
-logger = logging.getLogger(__name__)
-
-import logging
-from typing import Dict, Any, List, Optional
-
 logger = logging.getLogger(__name__)
 
 
@@ -197,8 +178,7 @@ class ContentProcessor:
     def __init__(self):
         logger.info("✅ ContentProcessor инициализирован")
 
-    async def process_meeting_content(self, transcription: str, duration: float,
-                                      speakers: Dict = None, segments: List[Dict] = None) -> Dict[str, Any]:
+    async def process_meeting_content(self) -> Dict[str, Any]:
         """
         Обработка содержания встречи
         """
