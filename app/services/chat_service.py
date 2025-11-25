@@ -171,11 +171,9 @@ class ChatService:
 
                 # Транскрибируем и анализируем аудио
                 from app.services.llm_processor import llm_processor
-                audio_result = await llm_processor.process_audio(audio_save_path)
 
-                if audio_result["success"]:
-                    audio_transcription = audio_result["transcription"]
-                    audio_analysis = audio_result["analysis"]
+
+
 
             # Конвертируем Enum в строку
             message_type_str = message_data.message_type
