@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.models.chat_models import ChatMessage
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import settings
@@ -24,7 +25,7 @@ from app.models.chat_schemas import (
     ChatSessionResponse,
     ChatMessageCreate,
     ChatMessageResponse,
-    ChatSessionListResponse
+    ChatSessionListResponse, DeleteChatResponse
 )
 from app.services.llm_processor import llm_processor, LLMProcessor
 from app.services.audio_processor import audio_processor
@@ -430,6 +431,46 @@ async def health_check():
             "file_processing": "available"
         }
     }
+
+
+@app.delete("/api/chats/{chat_id}", response_model=DeleteChatResponse)
+async def delete_chat(
+        chat_id: int,
+        current_user: User = Depends(get_current_active_user),
+        db: Session = Depends(get_db)
+):
+    """Удаление чата"""
+    try:
+        chat_service = ChatService(db)
+
+        # Получаем информацию о чате перед удалением для ответа
+        chat = chat_service.get_chat_session(chat_id, current_user.id)
+        if not chat:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+
+        # Получаем количество сообщений для ответа
+        messages_count = db.query(ChatMessage).filter(
+            ChatMessage.chat_session_id == chat_id
+        ).count()
+
+        # Удаляем чат
+        success = await chat_service.delete_chat_session(chat_id, current_user.id)
+
+        if success:
+            return DeleteChatResponse(
+                success=True,
+                message="Чат успешно удален",
+                deleted_chat_id=chat_id,
+                deleted_messages_count=messages_count
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Не удалось удалить чат")
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ Ошибка удаления чата {chat_id}: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка удаления чата")
 
 
 # ===== ФОНОВЫЕ ЗАДАЧИ =====

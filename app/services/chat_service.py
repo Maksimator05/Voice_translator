@@ -316,3 +316,34 @@ class ChatService:
             self.db.rollback()
             logger.error(f"❌ Ошибка удаления чата: {e}")
             raise
+
+    async def delete_chat_session(self, chat_id: int, user_id: int) -> bool:
+        """
+        Удаление чата и всех его сообщений
+        """
+        try:
+            # Находим чат пользователя
+            chat = self.db.query(ChatSession).filter(
+                ChatSession.id == chat_id,
+                ChatSession.user_id == user_id
+            ).first()
+
+            if not chat:
+                raise ValueError("Чат не найден или у вас нет прав доступа")
+
+            # Удаляем все сообщения чата (каскадное удаление если настроено в моделях)
+            message_count = self.db.query(ChatMessage).filter(
+                ChatMessage.chat_session_id == chat_id
+            ).delete()
+
+            # Удаляем сам чат
+            self.db.delete(chat)
+            self.db.commit()
+
+            logger.info(f"🗑️ Удален чат {chat_id}, сообщений: {message_count}")
+            return True
+
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"❌ Ошибка удаления чата {chat_id}: {e}")
+            raise e

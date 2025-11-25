@@ -61,3 +61,12 @@ class ChatAskRequest(BaseModel):
     """Схема для запроса к AI в чате"""
     message: str = Field(..., min_length=1, max_length=50000)  # 50k символов
     audio_data: Optional[UploadFile] = None
+
+class DeleteChatResponse(BaseModel):
+    success: bool
+    message: str
+    deleted_chat_id: int
+    deleted_messages_count: int
+
+    class Config:
+        from_attributes = True
