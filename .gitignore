@@ -1,0 +1,85 @@
+# ======================
+# ОС и редакторы
+# ======================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ======================
+# Python / Бэкенд
+# ======================
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.env.local
+.env.*.local
+venv/
+.venv/
+env/
+.env
+Pipfile
+Pipfile.lock
+poetry.lock
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+instance/
+.gitignore
+.DS_Store
+
+# SQLite
+*.db
+*.sqlite
+meeting_analyzer.db
+
+# Временные файлы аудио/видео
+uploads/
+temp_audio/
+converted_audio/
+temp_*.wav
+temp_*.mp3
+temp_*.mp4
+
+# ======================
+# Node.js / Фронтенд
+# ======================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.npm
+.yarn
+
+# Build артефакты React
+/build
+/dist
+/public/build
+/public/dist
+
+# Локальные настройки
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ======================
+# IDE / Разное
+# ======================
+.DS_Store
+.vercel
+netlify/
+.next/
+out/
+.nuxt
+.cache/
+coverage/
+*.tmp
+*.bak
+*.orig

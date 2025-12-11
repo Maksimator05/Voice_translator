@@ -1,17 +1,20 @@
 import base64
+import json
 import sys
 import os
 import tempfile
 
-from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, Form, Query
 from datetime import datetime
 import logging
 from typing import List, Optional
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app.models.chat_models import ChatMessage
+from app.websocket.manager import websocket_endpoint
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import settings
@@ -41,6 +44,70 @@ app = FastAPI(
     redoc_url="/redoc",
     max_request_size=50 * 1024 * 1024,  # 50MB вместо стандартных 1MB
 )
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(
+        websocket: WebSocket,
+        token: str = Query(...),  # Получаем токен как query параметр
+        db: Session = Depends(get_db)
+):
+    await websocket.accept()
+
+    try:
+        # Верификация токена
+        from app.auth.service import get_current_user_from_token
+        user = await get_current_user_from_token(token, db)
+
+        if not user:
+            await websocket.close(code=1008)
+            return
+
+        print(f"User {user.username} connected via WebSocket")
+
+        # Отправляем подтверждение подключения
+        await websocket.send_text(json.dumps({
+            "type": "connected",
+            "user_id": user.id,
+            "username": user.username
+        }))
+
+        while True:
+            # Получаем сообщения от клиента
+            data = await websocket.receive_text()
+            message = json.loads(data)
+
+            # Обработка ping
+            if message.get("type") == "ping":
+                await websocket.send_text(json.dumps({
+                    "type": "pong",
+                    "timestamp": datetime.now().isoformat()
+                }))
+
+            # Обработка сообщений чата
+            elif message.get("type") == "send_message":
+                chat_id = message.get("chat_id")
+                content = message.get("content")
+
+                # Здесь можно сохранить сообщение в БД
+                print(f"Message from user {user.username} in chat {chat_id}: {content}")
+
+                # Отправляем подтверждение
+                await websocket.send_text(json.dumps({
+                    "type": "message_sent",
+                    "chat_id": chat_id,
+                    "message_id": "temp_" + str(datetime.now().timestamp()),
+                    "timestamp": datetime.now().isoformat()
+                }))
+
+    except WebSocketDisconnect:
+        print(f"User disconnected")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        try:
+            await websocket.close(code=1011)
+        except:
+            pass
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_credentials=True, allow_headers=["*"])
 
