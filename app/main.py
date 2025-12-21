@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import sys
@@ -7,14 +8,14 @@ import tempfile
 from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, Form, Query
 from datetime import datetime
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.websockets import WebSocket, WebSocketDisconnect
+
 
 from app.models.chat_models import ChatMessage
-from app.websocket.manager import websocket_endpoint
+
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import settings
@@ -45,69 +46,124 @@ app = FastAPI(
     max_request_size=50 * 1024 * 1024,  # 50MB вместо стандартных 1MB
 )
 
+long_polling_connections: Dict[int, List[asyncio.Queue]] = {}
 
-@app.websocket("/ws")
-async def websocket_endpoint(
-        websocket: WebSocket,
-        token: str = Query(...),  # Получаем токен как query параметр
+
+@app.get("/api/longpolling/updates")
+async def get_updates(
+        user_id: int,
+        since: str,
+        current_user: User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
-    await websocket.accept()
+    """Long Polling эндпоинт для получения обновлений"""
+
+    # Проверяем что пользователь запрашивает свои обновления
+    if current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Преобразуем время since
+    since_time = datetime.fromisoformat(since.replace('Z', '+00:00'))
+
+    # Ждем обновлений с таймаутом
+    updates_queue = asyncio.Queue()
+
+    # Добавляем очередь в хранилище
+    if user_id not in long_polling_connections:
+        long_polling_connections[user_id] = []
+    long_polling_connections[user_id].append(updates_queue)
 
     try:
-        # Верификация токена
-        from app.auth.service import get_current_user_from_token
-        user = await get_current_user_from_token(token, db)
+        # Проверяем сразу есть ли обновления
+        immediate_updates = await check_immediate_updates(user_id, since_time, db)
+        if immediate_updates:
+            # Убираем из очереди
+            long_polling_connections[user_id].remove(updates_queue)
+            return {
+                "updates": immediate_updates,
+                "last_update": datetime.now().isoformat()
+            }
 
-        if not user:
-            await websocket.close(code=1008)
-            return
-
-        print(f"User {user.username} connected via WebSocket")
-
-        # Отправляем подтверждение подключения
-        await websocket.send_text(json.dumps({
-            "type": "connected",
-            "user_id": user.id,
-            "username": user.username
-        }))
-
-        while True:
-            # Получаем сообщения от клиента
-            data = await websocket.receive_text()
-            message = json.loads(data)
-
-            # Обработка ping
-            if message.get("type") == "ping":
-                await websocket.send_text(json.dumps({
-                    "type": "pong",
-                    "timestamp": datetime.now().isoformat()
-                }))
-
-            # Обработка сообщений чата
-            elif message.get("type") == "send_message":
-                chat_id = message.get("chat_id")
-                content = message.get("content")
-
-                # Здесь можно сохранить сообщение в БД
-                print(f"Message from user {user.username} in chat {chat_id}: {content}")
-
-                # Отправляем подтверждение
-                await websocket.send_text(json.dumps({
-                    "type": "message_sent",
-                    "chat_id": chat_id,
-                    "message_id": "temp_" + str(datetime.now().timestamp()),
-                    "timestamp": datetime.now().isoformat()
-                }))
-
-    except WebSocketDisconnect:
-        print(f"User disconnected")
-    except Exception as e:
-        print(f"WebSocket error: {e}")
+        # Ждем обновлений с таймаутом (25 секунд)
+        timeout = 25
         try:
-            await websocket.close(code=1011)
-        except:
-            pass
+            update = await asyncio.wait_for(updates_queue.get(), timeout=timeout)
+
+            # Убираем из очереди
+            long_polling_connections[user_id].remove(updates_queue)
+
+            return {
+                "updates": [update],
+                "last_update": datetime.now().isoformat()
+            }
+        except asyncio.TimeoutError:
+            # Таймаут - возвращаем пустой ответ
+            long_polling_connections[user_id].remove(updates_queue)
+            return {
+                "updates": [],
+                "last_update": since
+            }
+
+    except Exception as e:
+        # Очищаем при ошибке
+        if user_id in long_polling_connections and updates_queue in long_polling_connections[user_id]:
+            long_polling_connections[user_id].remove(updates_queue)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def check_immediate_updates(user_id: int, since_time: datetime, db: Session):
+    """Проверка немедленных обновлений из БД"""
+    try:
+        updates = []
+
+        # Проверяем новые сообщения в чатах пользователя
+        from app.services.chat_service import ChatService
+        chat_service = ChatService(db)
+
+        # Получаем чаты пользователя
+        user_chats = chat_service.get_user_chat_sessions(user_id)
+
+        for chat in user_chats:
+            # Получаем новые сообщения
+            new_messages = db.query(ChatMessage).filter(
+                ChatMessage.chat_session_id == chat.id,
+                ChatMessage.created_at > since_time
+            ).order_by(ChatMessage.created_at.desc()).limit(10).all()
+
+            for message in new_messages:
+                updates.append({
+                    "type": "new_message",
+                    "data": {
+                        "chat_id": chat.id,
+                        "message": {
+                            "id": message.id,
+                            "content": message.content,
+                            "role": message.role,
+                            "message_type": message.message_type,
+                            "created_at": message.created_at.isoformat(),
+                            "audio_filename": message.audio_filename,
+                            "audio_transcription": message.audio_transcription
+                        }
+                    }
+                })
+
+        return updates
+
+    except Exception as e:
+        print(f"Error checking immediate updates: {e}")
+        return []
+
+
+async def broadcast_update(user_id: int, update_data: dict):
+    """Отправка обновления всем подключенным клиентам пользователя"""
+    if user_id in long_polling_connections:
+        for queue in long_polling_connections[user_id][:]:  # Копируем список
+            try:
+                await queue.put(update_data)
+            except Exception as e:
+                print(f"Error broadcasting to user {user_id}: {e}")
+                # Удаляем сломанную очередь
+                long_polling_connections[user_id].remove(queue)
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_credentials=True, allow_headers=["*"])
 
@@ -276,11 +332,35 @@ async def add_message(
         current_user: User = Depends(get_current_active_user),
         db: Session = Depends(get_db)
 ):
-    """Добавление сообщения в чат"""
     try:
         chat_service = ChatService(db)
         message = await chat_service.add_message_to_chat(chat_id, current_user.id, message_data)
+
+        # Отправляем обновление через Long Polling
+        update_data = {
+            "type": "new_message",
+            "data": {
+                "chat_id": chat_id,
+                "message": {
+                    "id": message.id,
+                    "content": message.content,
+                    "role": message.role,
+                    "message_type": message.message_type,
+                    "created_at": message.created_at.isoformat(),
+                    "audio_filename": message.audio_filename,
+                    "audio_transcription": message.audio_transcription
+                }
+            }
+        }
+
+        # Отправляем обновление отправителю
+        await broadcast_update(current_user.id, update_data)
+
+        # Если это групповой чат, отправляем другим участникам
+        # (здесь можно добавить логику для групповых чатов)
+
         return message
+
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

@@ -1,3 +1,4 @@
+// store/authSlice.ts
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { authApi } from '../api/auth';
 import { AuthState, LoginCredentials, RegisterCredentials, User, TokenResponse } from '../types';
@@ -9,14 +10,37 @@ const initialState: AuthState = {
   error: null,
 };
 
+// Восстановление состояния из localStorage
+const restoreAuthState = () => {
+  const token = localStorage.getItem('access_token');
+  const userStr = localStorage.getItem('user');
+
+  if (token && userStr) {
+    try {
+      const user = JSON.parse(userStr);
+      return { user, token };
+    } catch (error) {
+      console.error('Error parsing stored user:', error);
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('user');
+      return null;
+    }
+  }
+  return null;
+};
+
+// Инициализируем стейт из localStorage
+const restoredState = restoreAuthState();
+if (restoredState) {
+  initialState.user = restoredState.user;
+  initialState.token = restoredState.token;
+}
+
 export const register = createAsyncThunk(
   'auth/register',
   async (credentials: RegisterCredentials, { rejectWithValue }) => {
     try {
       const response = await authApi.register(credentials);
-      // При регистрации НЕ сохраняем токен в localStorage
-      // localStorage.setItem('access_token', response.access_token); // УБИРАЕМ ЭТУ СТРОЧКУ
-      // localStorage.setItem('user', JSON.stringify(response.user)); // И ЭТУ
       return response;
     } catch (error: any) {
       return rejectWithValue(error.response?.data?.detail || 'Registration failed');
@@ -29,7 +53,6 @@ export const login = createAsyncThunk(
   async (credentials: LoginCredentials, { rejectWithValue }) => {
     try {
       const response = await authApi.login(credentials);
-      // При логине сохраняем токен
       localStorage.setItem('access_token', response.access_token);
       localStorage.setItem('user', JSON.stringify(response.user));
       return response;
@@ -47,6 +70,8 @@ export const logout = createAsyncThunk(
       localStorage.removeItem('access_token');
       localStorage.removeItem('user');
     } catch (error: any) {
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('user');
       return rejectWithValue(error.response?.data?.detail || 'Logout failed');
     }
   }
@@ -57,8 +82,11 @@ export const fetchCurrentUser = createAsyncThunk(
   async (_, { rejectWithValue }) => {
     try {
       const user = await authApi.getCurrentUser();
+      // Обновляем данные пользователя в localStorage
+      localStorage.setItem('user', JSON.stringify(user));
       return user;
     } catch (error: any) {
+      // Если не удалось получить пользователя, очищаем localStorage
       localStorage.removeItem('access_token');
       localStorage.removeItem('user');
       return rejectWithValue(error.response?.data?.detail || 'Failed to fetch user');
@@ -76,6 +104,13 @@ const authSlice = createSlice({
     clearUser: (state) => {
       state.user = null;
       state.token = null;
+    },
+    restoreAuth: (state) => {
+      const restored = restoreAuthState();
+      if (restored) {
+        state.user = restored.user;
+        state.token = restored.token;
+      }
     }
   },
   extraReducers: (builder) => {
@@ -87,9 +122,10 @@ const authSlice = createSlice({
       })
       .addCase(register.fulfilled, (state, action: PayloadAction<TokenResponse>) => {
         state.isLoading = false;
-        // При регистрации не сохраняем пользователя в стейт
-        // state.user = action.payload.user; // КОММЕНТИРУЕМ
-        // state.token = action.payload.access_token; // КОММЕНТИРУЕМ
+        state.user = action.payload.user;
+        state.token = action.payload.access_token;
+        localStorage.setItem('access_token', action.payload.access_token);
+        localStorage.setItem('user', JSON.stringify(action.payload.user));
       })
       .addCase(register.rejected, (state, action) => {
         state.isLoading = false;
@@ -114,6 +150,10 @@ const authSlice = createSlice({
         state.user = null;
         state.token = null;
       })
+      .addCase(logout.rejected, (state) => {
+        state.user = null;
+        state.token = null;
+      })
       // Fetch current user
       .addCase(fetchCurrentUser.fulfilled, (state, action: PayloadAction<User>) => {
         state.user = action.payload;
@@ -125,5 +165,5 @@ const authSlice = createSlice({
   },
 });
 
-export const { clearError, clearUser } = authSlice.actions;
+export const { clearError, clearUser, restoreAuth } = authSlice.actions;
 export default authSlice.reducer;

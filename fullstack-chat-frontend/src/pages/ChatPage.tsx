@@ -6,27 +6,24 @@ import { ChatWindow } from '../components/chat/ChatWindow';
 import { Button } from '@mui/material';
 import LogoutIcon from '@mui/icons-material/Logout';
 
-export const ChatPage: React.FC = () => {
-  const navigate = useNavigate();
-  const dispatch = useAppDispatch();
-  const { user, isLoading: authLoading } = useAppSelector((state) => state.auth);
+const ChatPage = () => {
+  const { chatId } = useParams<{ chatId?: string }>();
+  const dispatch = useDispatch();
+  const { currentChat, isLoading } = useSelector((state: any) => state.chat);
+  const { user } = useSelector((state: any) => state.auth);
 
+   useEffect(() => {
+    if (chatId) {
+      dispatch(fetchChat(parseInt(chatId)));
+    }
+  }, [chatId, dispatch]);
+
+  // Убедитесь, что polling запущен
   useEffect(() => {
-    const token = localStorage.getItem('access_token');
-    if (!token) {
-      navigate('/auth');
-      return;
+    if (user?.id && !longPollingService.isActive()) {
+      longPollingService.startPolling(user.id);
     }
-
-    if (!user) {
-      dispatch(fetchCurrentUser());
-    }
-  }, [token, user, navigate, dispatch]);
-
-  const handleLogout = async () => {
-    await dispatch(logout());
-    navigate('/auth', { replace: true });
-  };
+  }, [user?.id]);
 
   if (authLoading || !user) {
     return (

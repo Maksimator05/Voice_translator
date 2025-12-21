@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Container,
   Paper,
@@ -35,7 +35,7 @@ import {
   MoreVert,
   Delete,
   Edit,
-  Mic,
+  AttachFile,
   SmartToy,
   Close,
   AudioFile,
@@ -45,7 +45,8 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '../hooks/useRedux';
 import { logout } from '../store/authSlice';
-import { fetchChats, createChat, sendMessage, askAI } from '../store/chatSlice';
+import { fetchChats, createChat, askAI, fetchChat, deleteChat } from '../store/chatSlice';
+import { longPollingService } from '../api/longpolling';
 
 interface Chat {
   id: number;
@@ -56,7 +57,7 @@ interface Chat {
   last_message?: string;
   message_count?: number;
   user_id: number;
-  messages?: any[];
+  messages?: Message[];
 }
 
 interface Message {
@@ -67,7 +68,12 @@ interface Message {
   created_at: string;
   audio_filename?: string;
   audio_transcription?: string;
+  chat_id?: number;
+  is_user?: boolean;
 }
+
+// Ключ для localStorage кэша сообщений
+const MESSAGES_CACHE_KEY = 'chat_messages_cache';
 
 const ChatsPage: React.FC = () => {
   const navigate = useNavigate();
@@ -83,11 +89,18 @@ const ChatsPage: React.FC = () => {
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newChatTitle, setNewChatTitle] = useState('New Chat');
   const [newChatType, setNewChatType] = useState<'text' | 'audio' | 'meeting'>('text');
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [chatToDelete, setChatToDelete] = useState<Chat | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [error, setError] = useState('');
+  const [uploadingAudio, setUploadingAudio] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pollingInitialized = useRef(false);
+  const loadingChatIdRef = useRef<number | null>(null);
 
-  // Проверка авторизации
+  // Проверка авторизации и загрузка чатов
   useEffect(() => {
     if (!token) {
       navigate('/auth');
@@ -95,34 +108,173 @@ const ChatsPage: React.FC = () => {
     }
 
     loadChats();
-  }, [token, navigate, dispatch]);
 
-  // Загрузка чатов
+    // Восстанавливаем выбранный чат из localStorage при загрузке
+    const savedSelectedChatId = localStorage.getItem('selected_chat_id');
+    if (savedSelectedChatId && storeChats.length > 0) {
+      const chat = storeChats.find(c => c.id === parseInt(savedSelectedChatId));
+      if (chat) {
+        handleSelectChat(chat);
+      }
+    }
+  }, [token, navigate]);
+
+  // Загрузка чатов из store
   useEffect(() => {
     if (storeChats.length > 0) {
       const typedChats = storeChats.map(chat => ({
         ...chat,
-        session_type: chat.session_type || 'text'
+        session_type: chat.session_type || 'text',
+        messages: chat.messages || [],
+        message_count: chat.message_count || 0
       })) as Chat[];
 
       setChats(typedChats);
 
+      // Автовыбор первого чата, если нет выбранного
       if (!selectedChat && typedChats.length > 0) {
-        setSelectedChat(typedChats[0]);
-        if (typedChats[0].messages) {
-          setMessages(typedChats[0].messages);
-        }
+        const firstChat = typedChats[0];
+        handleSelectChat(firstChat);
       }
     }
-  }, [storeChats, selectedChat]);
+  }, [storeChats]);
+
+  // Long Polling инициализация
+  useEffect(() => {
+    if (!user || pollingInitialized.current) return;
+
+    const initPolling = () => {
+      console.log('Initializing polling for user:', user.id);
+      longPollingService.startPolling(user.id);
+      pollingInitialized.current = true;
+    };
+
+    const timer = setTimeout(initPolling, 1000);
+
+    return () => {
+      clearTimeout(timer);
+      if (pollingInitialized.current) {
+        console.log('Cleaning up polling');
+        longPollingService.stopPolling();
+        pollingInitialized.current = false;
+      }
+    };
+  }, [user?.id]);
+
+  // Обработка новых сообщений из polling
+  useEffect(() => {
+    if (!user) return;
+
+    const handleNewMessage = (data: any) => {
+      console.log('New message via Long Polling:', data);
+
+      if (!data || !data.message) {
+        console.error('Invalid polling data:', data);
+        return;
+      }
+
+      const { message, chat_id } = data;
+
+      // Нормализуем сообщение
+      const normalizedMessage: Message = {
+        id: message.id,
+        content: message.content || '',
+        role: message.role === 'user' ? 'user' : 'assistant',
+        message_type: message.message_type || 'text',
+        created_at: message.created_at || new Date().toISOString(),
+        audio_filename: message.audio_filename,
+        audio_transcription: message.audio_transcription,
+        chat_id: chat_id || message.chat_id,
+        is_user: message.role === 'user',
+      };
+
+      // Обновляем сообщения в текущем чате
+      if (selectedChat?.id === normalizedMessage.chat_id) {
+        setMessages(prev => {
+          // Убираем временные сообщения
+          const filtered = prev.filter(msg =>
+            !(typeof msg.id === 'string' && msg.id.toString().startsWith('temp_'))
+          );
+
+          // Проверяем, нет ли уже такого сообщения
+          const messageExists = filtered.some(msg =>
+            msg.id === normalizedMessage.id
+          );
+
+          if (!messageExists) {
+            const newMessages = [...filtered, normalizedMessage];
+            // Сохраняем в кэш
+            saveMessagesToCache(selectedChat.id, newMessages);
+            return newMessages;
+          }
+          return filtered;
+        });
+      }
+
+      // Обновляем список чатов
+      setChats(prev => prev.map(chat => {
+        if (chat.id === normalizedMessage.chat_id) {
+          return {
+            ...chat,
+            last_message: normalizedMessage.content?.substring(0, 50) || 'New message',
+            updated_at: normalizedMessage.created_at || new Date().toISOString(),
+            message_count: (chat.message_count || 0) + 1
+          };
+        }
+        return chat;
+      }));
+    };
+
+    const handlePollingError = (error: any) => {
+      console.error('Polling error:', error);
+      setError('Connection error. Reconnecting...');
+    };
+
+    longPollingService.on('new_message', handleNewMessage);
+    longPollingService.on('error', handlePollingError);
+
+    return () => {
+      longPollingService.off('new_message', handleNewMessage);
+      longPollingService.off('error', handlePollingError);
+    };
+  }, [user, selectedChat]);
 
   // Прокрутка к последнему сообщению
   useEffect(() => {
-    scrollToBottom();
+    if (messages.length > 0) {
+      scrollToBottom();
+    }
   }, [messages]);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = useCallback(() => {
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'end'
+      });
+    }, 100);
+  }, []);
+
+  // Сохранение сообщений в кэш
+  const saveMessagesToCache = (chatId: number, messages: Message[]) => {
+    try {
+      const cache = JSON.parse(localStorage.getItem(MESSAGES_CACHE_KEY) || '{}');
+      cache[chatId] = messages;
+      localStorage.setItem(MESSAGES_CACHE_KEY, JSON.stringify(cache));
+    } catch (error) {
+      console.error('Error saving messages to cache:', error);
+    }
+  };
+
+  // Загрузка сообщений из кэша
+  const loadMessagesFromCache = (chatId: number): Message[] => {
+    try {
+      const cache = JSON.parse(localStorage.getItem(MESSAGES_CACHE_KEY) || '{}');
+      return cache[chatId] || [];
+    } catch (error) {
+      console.error('Error loading messages from cache:', error);
+      return [];
+    }
   };
 
   const loadChats = async () => {
@@ -134,37 +286,139 @@ const ChatsPage: React.FC = () => {
     }
   };
 
+  const loadChatMessages = async (chatId: number) => {
+    if (loadingChatIdRef.current === chatId) return;
+
+    loadingChatIdRef.current = chatId;
+
+    try {
+      // Сначала загружаем из кэша для мгновенного отображения
+      const cachedMessages = loadMessagesFromCache(chatId);
+      if (cachedMessages.length > 0) {
+        setMessages(cachedMessages);
+      }
+
+      // Затем загружаем с сервера
+      const result = await dispatch(fetchChat(chatId)).unwrap();
+      if (result && result.messages) {
+        const serverMessages = result.messages as Message[];
+        setMessages(serverMessages);
+        // Сохраняем в кэш
+        saveMessagesToCache(chatId, serverMessages);
+      }
+    } catch (error: any) {
+      console.error('Error loading chat messages:', error);
+      // Если не удалось загрузить с сервера, используем кэш
+      const cachedMessages = loadMessagesFromCache(chatId);
+      setMessages(cachedMessages);
+    } finally {
+      loadingChatIdRef.current = null;
+    }
+  };
+
+  const handleSelectChat = async (chat: Chat) => {
+    setSelectedChat(chat);
+    // Сохраняем ID выбранного чата в localStorage
+    localStorage.setItem('selected_chat_id', chat.id.toString());
+
+    // Загружаем сообщения для этого чата
+    await loadChatMessages(chat.id);
+  };
+
   const handleSendMessage = async () => {
-    if (!newMessage.trim() || !selectedChat) return;
+    if (!newMessage.trim() || !selectedChat || !user) return;
 
     // Optimistic update
     const optimisticMessage: Message = {
       id: `temp_${Date.now()}`,
-      content: newMessage,
+      content: newMessage.trim(),
       role: 'user',
       message_type: 'text',
       created_at: new Date().toISOString(),
+      chat_id: selectedChat.id,
+      is_user: true,
     };
 
-    setMessages(prev => [...prev, optimisticMessage]);
+    setMessages(prev => {
+      const newMessages = [...prev, optimisticMessage];
+      saveMessagesToCache(selectedChat.id, newMessages);
+      return newMessages;
+    });
+
     const currentMessage = newMessage;
     setNewMessage('');
 
     try {
-      // Отправляем сообщение
-      const result = await dispatch(askAI({
+      await dispatch(askAI({
         chatId: selectedChat.id,
         message: currentMessage.trim(),
-      }));
+      })).unwrap();
 
-      // Обновляем чаты
-      await loadChats();
+      // Перезагружаем сообщения для обновления временных
+      setTimeout(() => {
+        loadChatMessages(selectedChat.id);
+      }, 1000);
 
     } catch (error: any) {
       console.error('Error sending message:', error);
       setError(error.response?.data?.detail || 'Failed to send message');
       // Удаляем оптимистичное сообщение при ошибке
-      setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
+      setMessages(prev => {
+        const filtered = prev.filter(msg => msg.id !== optimisticMessage.id);
+        saveMessagesToCache(selectedChat.id, filtered);
+        return filtered;
+      });
+    }
+  };
+
+  const handleSendAudio = async (audioFile: File) => {
+    if (!selectedChat || !user || !audioFile) return;
+
+    setUploadingAudio(true);
+
+    // Optimistic update
+    const optimisticMessage: Message = {
+      id: `temp_audio_${Date.now()}`,
+      content: '[Audio message]',
+      role: 'user',
+      message_type: 'audio',
+      created_at: new Date().toISOString(),
+      chat_id: selectedChat.id,
+      is_user: true,
+    };
+
+    setMessages(prev => {
+      const newMessages = [...prev, optimisticMessage];
+      saveMessagesToCache(selectedChat.id, newMessages);
+      return newMessages;
+    });
+
+    try {
+      await dispatch(askAI({
+        chatId: selectedChat.id,
+        audioFile,
+      })).unwrap();
+
+      // Перезагружаем сообщения
+      setTimeout(() => {
+        loadChatMessages(selectedChat.id);
+      }, 1000);
+
+      // Очищаем input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+
+    } catch (error: any) {
+      console.error('Error sending audio:', error);
+      setError(error.response?.data?.detail || 'Failed to send audio');
+      setMessages(prev => {
+        const filtered = prev.filter(msg => msg.id !== optimisticMessage.id);
+        saveMessagesToCache(selectedChat.id, filtered);
+        return filtered;
+      });
+    } finally {
+      setUploadingAudio(false);
     }
   };
 
@@ -177,12 +431,25 @@ const ChatsPage: React.FC = () => {
 
   const handleCreateChat = async () => {
     try {
-      const result = await dispatch(createChat(newChatTitle));
-      if (createChat.fulfilled.match(result)) {
-        setSelectedChat(result.payload);
-        setMessages(result.payload.messages || []);
+      const result = await dispatch(createChat(newChatTitle)).unwrap();
+      if (result) {
+        const newChat: Chat = {
+          ...result,
+          session_type: newChatType,
+          messages: [],
+          message_count: 0,
+        };
+        handleSelectChat(newChat);
         setCreateDialogOpen(false);
         setNewChatTitle('New Chat');
+        setNewChatType('text');
+        // Перезагружаем чаты для обновления списка
+        await loadChats();
+
+        // Очищаем кэш для нового чата
+        const cache = JSON.parse(localStorage.getItem(MESSAGES_CACHE_KEY) || '{}');
+        cache[newChat.id] = [];
+        localStorage.setItem(MESSAGES_CACHE_KEY, JSON.stringify(cache));
       }
     } catch (error: any) {
       console.error('Error creating chat:', error);
@@ -190,23 +457,94 @@ const ChatsPage: React.FC = () => {
     }
   };
 
-  const handleDeleteChat = async (chatId: number) => {
-    if (!window.confirm('Delete this chat?')) return;
+  const handleDeleteChatClick = async (chatId: number) => {
+    const chat = chats.find(c => c.id === chatId);
+    if (!chat) return;
+
+    setChatToDelete(chat);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteChat = async () => {
+    if (!chatToDelete) return;
+
+    setDeleting(true);
     try {
-      // TODO: Реализовать удаление через API
-      setChats(chats.filter(chat => chat.id !== chatId));
-      if (selectedChat?.id === chatId) {
-        setSelectedChat(chats.length > 1 ? chats.find(c => c.id !== chatId) || null : null);
+      await dispatch(deleteChat(chatToDelete.id)).unwrap();
+
+      // Очищаем кэш сообщений для удаленного чата
+      const cache = JSON.parse(localStorage.getItem(MESSAGES_CACHE_KEY) || '{}');
+      delete cache[chatToDelete.id];
+      localStorage.setItem(MESSAGES_CACHE_KEY, JSON.stringify(cache));
+
+      // Если удаляли выбранный чат, выбираем другой
+      if (selectedChat?.id === chatToDelete.id) {
+        const remainingChats = chats.filter(c => c.id !== chatToDelete.id);
+        if (remainingChats.length > 0) {
+          handleSelectChat(remainingChats[0]);
+        } else {
+          setSelectedChat(null);
+          setMessages([]);
+          localStorage.removeItem('selected_chat_id');
+        }
       }
+
+      setDeleteDialogOpen(false);
+      setChatToDelete(null);
+
     } catch (error: any) {
       console.error('Error deleting chat:', error);
       setError(error.response?.data?.detail || 'Failed to delete chat');
+    } finally {
+      setDeleting(false);
     }
   };
 
   const handleLogout = async () => {
+    pollingInitialized.current = false;
+    longPollingService.stopPolling();
+    longPollingService.removeAllListeners();
+
+    // Очищаем кэш при выходе
+    localStorage.removeItem(MESSAGES_CACHE_KEY);
+    localStorage.removeItem('selected_chat_id');
+
     await dispatch(logout());
     navigate('/auth', { replace: true });
+  };
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    const file = files[0];
+
+    // Проверка типа файла
+    if (!file.type.startsWith('audio/')) {
+      setError('Please select an audio file (MP3, WAV, M4A, etc.)');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+
+    // Проверка размера файла (максимум 50MB)
+    if (file.size > 50 * 1024 * 1024) {
+      setError('Audio file is too large. Maximum size is 50MB');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+
+    // Автоматически отправляем файл
+    handleSendAudio(file);
+  };
+
+  const handleAttachClick = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
   };
 
   const filteredChats = chats.filter(chat =>
@@ -215,8 +553,8 @@ const ChatsPage: React.FC = () => {
 
   const getChatTypeIcon = (type: string) => {
     switch (type) {
-      case 'audio': return <Mic fontSize="small" />;
-      case 'meeting': return <AudioFile fontSize="small" />;
+      case 'audio': return <AudioFile fontSize="small" />;
+      case 'meeting': return <AttachFile fontSize="small" />;
       default: return <TextSnippet fontSize="small" />;
     }
   };
@@ -230,14 +568,37 @@ const ChatsPage: React.FC = () => {
   };
 
   const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    if (diff < 24 * 60 * 60 * 1000) {
-      return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    } else {
-      return date.toLocaleDateString('en-US');
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) return 'Just now';
+
+      const now = new Date();
+      const diff = now.getTime() - date.getTime();
+      const minutes = Math.floor(diff / (1000 * 60));
+      const hours = Math.floor(diff / (1000 * 60 * 60));
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+
+      if (minutes < 1) return 'Just now';
+      if (hours < 1) return `${minutes}m ago`;
+      if (days < 1) return `${hours}h ago`;
+      if (days < 7) return `${days}d ago`;
+
+      return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        ...(date.getFullYear() !== now.getFullYear() && { year: 'numeric' })
+      });
+    } catch (e) {
+      return 'Just now';
     }
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
   if (isLoading && chats.length === 0) {
@@ -262,6 +623,15 @@ const ChatsPage: React.FC = () => {
   return (
     <Box sx={{ backgroundColor: '#0f172a', minHeight: '100vh' }}>
       <Container maxWidth="xl" sx={{ pt: 2, pb: 4, height: 'calc(100vh - 32px)' }}>
+        {/* Скрытый input для выбора файлов */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleFileSelect}
+          accept="audio/*"
+          style={{ display: 'none' }}
+        />
+
         {/* Header */}
         <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Typography variant="h4" sx={{
@@ -319,17 +689,18 @@ const ChatsPage: React.FC = () => {
 
         <Grid container spacing={3} sx={{ height: 'calc(100% - 80px)' }}>
           {/* Chat List */}
-          <Grid item xs={12} md={4}>
+          <Grid size={{ xs: 12, md: 4 }}>
             <Paper sx={{
               height: '100%',
               display: 'flex',
               flexDirection: 'column',
               backgroundColor: '#1e293b',
               border: '1px solid #334155',
+              borderRadius: 2,
             }}>
               <Box p={2} borderBottom="1px solid #334155">
                 <Typography variant="h6" gutterBottom sx={{ color: '#f1f5f9' }}>
-                  Chats
+                  Chats ({chats.length})
                 </Typography>
                 <TextField
                   fullWidth
@@ -379,23 +750,25 @@ const ChatsPage: React.FC = () => {
                   New Chat
                 </Button>
               </Box>
-              <Box sx={{ flex: 1, overflow: 'auto' }}>
-                <List>
+              <Box sx={{ flex: 1, overflow: 'auto', px: 1 }}>
+                <List disablePadding>
                   {filteredChats.map((chat) => (
-                    <React.Fragment key={chat.id}>
+                    <React.Fragment key={`chat_${chat.id}_${chat.updated_at}`}>
                       <ListItem
-                        button
                         selected={selectedChat?.id === chat.id}
-                        onClick={() => {
-                          setSelectedChat(chat);
-                          setMessages(chat.messages || []);
-                        }}
+                        onClick={() => handleSelectChat(chat)}
                         sx={{
+                          cursor: 'pointer',
+                          borderRadius: 1,
+                          mb: 0.5,
                           '&.Mui-selected': {
                             backgroundColor: 'rgba(124, 58, 237, 0.1)',
                             '&:hover': {
                               backgroundColor: 'rgba(124, 58, 237, 0.2)',
                             },
+                          },
+                          '&:hover': {
+                            backgroundColor: 'rgba(124, 58, 237, 0.05)',
                           },
                         }}
                       >
@@ -410,18 +783,34 @@ const ChatsPage: React.FC = () => {
                         </ListItemAvatar>
                         <ListItemText
                           primary={
-                            <Box display="flex" justifyContent="space-between">
-                              <Typography variant="subtitle2" noWrap sx={{ flex: 1, color: '#f1f5f9' }}>
+                            <Box display="flex" justifyContent="space-between" alignItems="flex-start">
+                              <Typography variant="subtitle2" noWrap sx={{
+                                flex: 1,
+                                color: '#f1f5f9',
+                                pr: 1
+                              }}>
                                 {chat.title}
                               </Typography>
-                              <Typography variant="caption" sx={{ color: '#94a3b8' }}>
+                              <Typography variant="caption" sx={{
+                                color: '#94a3b8',
+                                whiteSpace: 'nowrap'
+                              }}>
                                 {formatDate(chat.updated_at)}
                               </Typography>
                             </Box>
                           }
                           secondary={
-                            <Typography variant="body2" sx={{ color: '#94a3b8' }} noWrap>
-                              {chat.last_message || 'No messages'}
+                            <Typography variant="body2" sx={{
+                              color: '#94a3b8',
+                              display: '-webkit-box',
+                              WebkitLineClamp: 1,
+                              WebkitBoxOrient: 'vertical',
+                              overflow: 'hidden'
+                            }}>
+                              {chat.last_message || 'No messages yet'}
+                              {(chat.message_count || 0) > 0 && (
+                                <span> • {chat.message_count} {chat.message_count === 1 ? 'message' : 'messages'}</span>
+                              )}
                             </Typography>
                           }
                         />
@@ -432,6 +821,7 @@ const ChatsPage: React.FC = () => {
                             onClick={(e) => {
                               e.stopPropagation();
                               setAnchorEl(e.currentTarget);
+                              setSelectedChat(chat);
                             }}
                             sx={{ color: '#94a3b8' }}
                           >
@@ -439,7 +829,11 @@ const ChatsPage: React.FC = () => {
                           </IconButton>
                         </ListItemSecondaryAction>
                       </ListItem>
-                      <Divider component="li" sx={{ borderColor: '#334155' }} />
+                      <Divider component="li" sx={{
+                        borderColor: '#334155',
+                        opacity: 0.5,
+                        mx: 2
+                      }} />
                     </React.Fragment>
                   ))}
                 </List>
@@ -471,13 +865,14 @@ const ChatsPage: React.FC = () => {
           </Grid>
 
           {/* Chat Window */}
-          <Grid item xs={12} md={8}>
+          <Grid size={{ xs: 12, md: 8 }}>
             <Paper sx={{
               height: '100%',
               display: 'flex',
               flexDirection: 'column',
               backgroundColor: '#1e293b',
               border: '1px solid #334155',
+              borderRadius: 2,
             }}>
               {selectedChat ? (
                 <>
@@ -487,6 +882,7 @@ const ChatsPage: React.FC = () => {
                     display="flex"
                     alignItems="center"
                     justifyContent="space-between"
+                    sx={{ backgroundColor: 'rgba(15, 23, 42, 0.5)' }}
                   >
                     <Box display="flex" alignItems="center">
                       <Avatar
@@ -504,6 +900,9 @@ const ChatsPage: React.FC = () => {
                         <Typography variant="caption" sx={{ color: '#94a3b8' }}>
                           {selectedChat.session_type === 'audio' ? 'Audio chat' :
                            selectedChat.session_type === 'meeting' ? 'Meeting analysis' : 'Text chat'}
+                           {(selectedChat.message_count || 0) > 0 && (
+                             <span> • {selectedChat.message_count} {selectedChat.message_count === 1 ? 'message' : 'messages'}</span>
+                           )}
                         </Typography>
                       </Box>
                     </Box>
@@ -511,8 +910,8 @@ const ChatsPage: React.FC = () => {
                       <IconButton
                         size="small"
                         title="Delete chat"
-                        onClick={() => handleDeleteChat(selectedChat.id)}
-                        sx={{ color: '#94a3b8' }}
+                        onClick={() => handleDeleteChatClick(selectedChat.id)}
+                        sx={{ color: '#94a3b8', '&:hover': { color: '#ef4444' } }}
                       >
                         <Delete />
                       </IconButton>
@@ -527,108 +926,161 @@ const ChatsPage: React.FC = () => {
                       display: 'flex',
                       flexDirection: 'column',
                       backgroundColor: '#0f172a',
+                      position: 'relative',
                     }}
                   >
-                    {messages.map((message) => (
-                      <Box
-                        key={message.id}
-                        sx={{
-                          display: 'flex',
-                          justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start',
-                          mb: 2,
-                        }}
-                      >
-                        <Box
-                          sx={{
-                            maxWidth: '70%',
-                            p: 2,
-                            borderRadius: 2,
-                            bgcolor: message.role === 'user'
-                              ? 'rgba(124, 58, 237, 0.1)'
-                              : 'rgba(30, 41, 59, 0.5)',
-                            border: `1px solid ${
-                              message.role === 'user'
-                                ? 'rgba(124, 58, 237, 0.2)'
-                                : 'rgba(124, 58, 237, 0.1)'
-                            }`,
-                          }}
-                        >
-                          <Box display="flex" alignItems="center" mb={0.5}>
-                            {message.role === 'assistant' && (
-                              <SmartToy fontSize="small" sx={{ mr: 0.5, color: '#7C3AED' }} />
-                            )}
-                            <Typography variant="caption" sx={{ color: '#94a3b8' }}>
-                              {message.role === 'user' ? 'You' : 'AI Assistant'} • {formatDate(message.created_at)}
-                            </Typography>
-                          </Box>
-                          {message.message_type === 'audio' ? (
-                            <Box>
-                              <Box display="flex" alignItems="center" mb={1}>
-                                <Mic fontSize="small" sx={{ mr: 1, color: '#7C3AED' }} />
-                                <Typography variant="body1" sx={{ color: '#f1f5f9' }}>
-                                  Audio message
+                    {messages.length === 0 ? (
+                      <Box sx={{
+                        flex: 1,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        textAlign: 'center',
+                        p: 4
+                      }}>
+                        <SmartToy sx={{ fontSize: 64, color: '#475569', mb: 2 }} />
+                        <Typography variant="h6" sx={{ color: '#f1f5f9', mb: 2 }}>
+                          No messages yet
+                        </Typography>
+                        <Typography variant="body2" sx={{ color: '#94a3b8', mb: 3, maxWidth: 400 }}>
+                          Start the conversation by sending a message or uploading an audio file
+                        </Typography>
+                      </Box>
+                    ) : (
+                      <>
+                        {messages.map((message, index) => {
+                          // Защита от undefined
+                          if (!message) return null;
+
+                          // Создаем уникальный ключ
+                          const messageKey = message.id
+                            ? `msg_${message.id}_${message.created_at}`
+                            : `msg_temp_${index}_${Date.now()}`;
+
+                          return (
+                            <Box
+                              key={messageKey}
+                              sx={{
+                                display: 'flex',
+                                justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start',
+                                mb: 2,
+                                animation: 'fadeIn 0.3s ease-in',
+                              }}
+                            >
+                              <Box
+                                sx={{
+                                  maxWidth: '70%',
+                                  p: 2,
+                                  borderRadius: 2,
+                                  bgcolor: message.role === 'user'
+                                    ? 'rgba(124, 58, 237, 0.1)'
+                                    : 'rgba(30, 41, 59, 0.5)',
+                                  border: `1px solid ${
+                                    message.role === 'user'
+                                      ? 'rgba(124, 58, 237, 0.2)'
+                                      : 'rgba(124, 58, 237, 0.1)'
+                                  }`,
+                                }}
+                              >
+                                <Box display="flex" alignItems="center" mb={0.5}>
+                                  {message.role === 'assistant' && (
+                                    <SmartToy fontSize="small" sx={{ mr: 0.5, color: '#7C3AED' }} />
+                                  )}
+                                  <Typography variant="caption" sx={{ color: '#94a3b8' }}>
+                                    {message.role === 'user' ? 'You' : 'AI Assistant'} • {formatDate(message.created_at)}
+                                  </Typography>
+                                </Box>
+                                {message.message_type === 'audio' ? (
+                                  <Box>
+                                    <Box display="flex" alignItems="center" mb={1}>
+                                      <AudioFile fontSize="small" sx={{ mr: 1, color: '#7C3AED' }} />
+                                      <Typography variant="body1" sx={{ color: '#f1f5f9' }}>
+                                        Audio message
+                                      </Typography>
+                                    </Box>
+                                    {message.audio_transcription && (
+                                      <Box sx={{
+                                        mt: 1,
+                                        p: 1.5,
+                                        backgroundColor: 'rgba(30, 41, 59, 0.3)',
+                                        borderRadius: 1,
+                                        borderLeft: '3px solid #7C3AED'
+                                      }}>
+                                        <Typography variant="caption" sx={{
+                                          color: '#94a3b8',
+                                          display: 'block',
+                                          mb: 0.5
+                                        }}>
+                                          Transcription:
+                                        </Typography>
+                                        <Typography variant="body2" sx={{
+                                          color: '#cbd5e1',
+                                          fontStyle: 'italic',
+                                          whiteSpace: 'pre-wrap',
+                                        }}>
+                                          "{message.audio_transcription}"
+                                        </Typography>
+                                      </Box>
+                                    )}
+                                  </Box>
+                                ) : (
+                                  <Typography variant="body1" sx={{
+                                    color: '#f1f5f9',
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-word'
+                                  }}>
+                                    {message.content}
+                                  </Typography>
+                                )}
+                              </Box>
+                            </Box>
+                          );
+                        })}
+                        {(isSending || uploadingAudio) && (
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              justifyContent: 'flex-start',
+                              mb: 2,
+                            }}
+                          >
+                            <Box
+                              sx={{
+                                maxWidth: '70%',
+                                p: 2,
+                                borderRadius: 2,
+                                bgcolor: 'rgba(30, 41, 59, 0.5)',
+                                border: '1px solid rgba(124, 58, 237, 0.1)',
+                              }}
+                            >
+                              <Box display="flex" alignItems="center" gap={1}>
+                                <CircularProgress size={16} sx={{ color: '#94a3b8' }} />
+                                <Typography variant="body2" sx={{ color: '#94a3b8' }}>
+                                  {uploadingAudio ? 'Uploading audio...' : 'AI is thinking...'}
                                 </Typography>
                               </Box>
-                              {message.audio_transcription && (
-                                <Typography variant="body2" sx={{
-                                  fontStyle: 'italic',
-                                  color: '#cbd5e1',
-                                  mt: 1,
-                                  p: 1,
-                                  backgroundColor: 'rgba(30, 41, 59, 0.3)',
-                                  borderRadius: 1,
-                                }}>
-                                  "{message.audio_transcription}"
-                                </Typography>
-                              )}
                             </Box>
-                          ) : (
-                            <Typography variant="body1" sx={{ color: '#f1f5f9' }}>
-                              {message.content}
-                            </Typography>
-                          )}
-                        </Box>
-                      </Box>
-                    ))}
-                    {isSending && (
-                      <Box
-                        sx={{
-                          display: 'flex',
-                          justifyContent: 'flex-start',
-                          mb: 2,
-                        }}
-                      >
-                        <Box
-                          sx={{
-                            maxWidth: '70%',
-                            p: 2,
-                            borderRadius: 2,
-                            bgcolor: 'rgba(30, 41, 59, 0.5)',
-                            border: '1px solid rgba(124, 58, 237, 0.1)',
-                          }}
-                        >
-                          <Typography variant="body2" sx={{ color: '#94a3b8' }}>
-                            AI is typing...
-                          </Typography>
-                        </Box>
-                      </Box>
+                          </Box>
+                        )}
+                        <div ref={messagesEndRef} />
+                      </>
                     )}
-                    <div ref={messagesEndRef} />
                   </Box>
 
                   <Box p={2} borderTop="1px solid #334155">
                     <Grid container spacing={1} alignItems="center">
-                      <Grid item xs>
+                      <Grid size="grow">
                         <TextField
                           fullWidth
                           multiline
                           maxRows={4}
-                          placeholder="Type your message..."
+                          placeholder="Type your message or upload audio..."
                           value={newMessage}
                           onChange={(e) => setNewMessage(e.target.value)}
                           onKeyPress={handleKeyPress}
                           size="small"
-                          disabled={isSending}
+                          disabled={isSending || uploadingAudio}
                           sx={{
                             '& .MuiOutlinedInput-root': {
                               backgroundColor: '#0f172a',
@@ -648,11 +1100,26 @@ const ChatsPage: React.FC = () => {
                           }}
                         />
                       </Grid>
-                      <Grid item>
+                      <Grid>
+                        <IconButton
+                          onClick={handleAttachClick}
+                          disabled={isSending || uploadingAudio}
+                          sx={{
+                            color: '#7C3AED',
+                            backgroundColor: 'rgba(124, 58, 237, 0.1)',
+                            '&:hover': {
+                              backgroundColor: 'rgba(124, 58, 237, 0.2)',
+                            },
+                            mr: 1,
+                          }}
+                          title="Upload audio file"
+                        >
+                          {uploadingAudio ? <CircularProgress size={20} sx={{ color: '#7C3AED' }} /> : <AttachFile />}
+                        </IconButton>
                         <IconButton
                           color="primary"
                           onClick={handleSendMessage}
-                          disabled={!newMessage.trim() || isSending}
+                          disabled={!newMessage.trim() || isSending || uploadingAudio}
                           sx={{
                             bgcolor: '#7C3AED',
                             color: 'white',
@@ -669,7 +1136,7 @@ const ChatsPage: React.FC = () => {
                       </Grid>
                     </Grid>
                     <Typography variant="caption" sx={{ color: '#64748b', mt: 1, display: 'block' }}>
-                      Press Enter to send, Shift+Enter for new line
+                      Press Enter to send • Click paperclip to upload audio (MP3, WAV, M4A, etc.)
                     </Typography>
                   </Box>
                 </>
@@ -688,8 +1155,9 @@ const ChatsPage: React.FC = () => {
                   <Typography variant="h6" gutterBottom sx={{ color: '#f1f5f9' }}>
                     Select a chat or create a new one
                   </Typography>
-                  <Typography variant="body2" sx={{ color: '#94a3b8', mb: 3, textAlign: 'center' }}>
-                    Chat with AI assistant for meeting analysis, getting advice, and work assistance
+                  <Typography variant="body2" sx={{ color: '#94a3b8', mb: 3, textAlign: 'center', maxWidth: 500 }}>
+                    Chat with AI assistant for meeting analysis, getting advice, and work assistance.
+                    You can send text messages or upload audio files for transcription and analysis.
                   </Typography>
                   <Button
                     variant="contained"
@@ -718,6 +1186,7 @@ const ChatsPage: React.FC = () => {
             sx: {
               backgroundColor: '#1e293b',
               border: '1px solid #334155',
+              borderRadius: 2,
             }
           }}
         >
@@ -768,19 +1237,19 @@ const ChatsPage: React.FC = () => {
                 <MenuItem value="text">
                   <Box display="flex" alignItems="center" sx={{ color: '#f1f5f9' }}>
                     <TextSnippet sx={{ mr: 1 }} />
-                    Text
+                    Text chat
                   </Box>
                 </MenuItem>
                 <MenuItem value="audio">
                   <Box display="flex" alignItems="center" sx={{ color: '#f1f5f9' }}>
-                    <Mic sx={{ mr: 1 }} />
-                    Audio
+                    <AudioFile sx={{ mr: 1 }} />
+                    Audio chat
                   </Box>
                 </MenuItem>
                 <MenuItem value="meeting">
                   <Box display="flex" alignItems="center" sx={{ color: '#f1f5f9' }}>
-                    <AudioFile sx={{ mr: 1 }} />
-                    Meeting
+                    <AttachFile sx={{ mr: 1 }} />
+                    Meeting analysis
                   </Box>
                 </MenuItem>
               </Select>
@@ -808,7 +1277,59 @@ const ChatsPage: React.FC = () => {
           </DialogActions>
         </Dialog>
 
-        {/* Chat Actions Menu */}
+        {/* Диалог подтверждения удаления */}
+        <Dialog
+          open={deleteDialogOpen}
+          onClose={() => !deleting && setDeleteDialogOpen(false)}
+          PaperProps={{
+            sx: {
+              backgroundColor: '#1e293b',
+              border: '1px solid #334155',
+              borderRadius: 2,
+            }
+          }}
+        >
+          <DialogTitle sx={{ color: '#f1f5f9' }}>
+            Delete Chat
+          </DialogTitle>
+          <DialogContent>
+            <Typography sx={{ color: '#cbd5e1', mb: 2 }}>
+              Are you sure you want to delete "{chatToDelete?.title}"?
+            </Typography>
+            <Typography variant="body2" sx={{ color: '#94a3b8' }}>
+              This action cannot be undone. All messages in this chat will be permanently deleted.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button
+              onClick={() => setDeleteDialogOpen(false)}
+              disabled={deleting}
+              sx={{ color: '#94a3b8' }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmDeleteChat}
+              disabled={deleting}
+              variant="contained"
+              color="error"
+              sx={{
+                backgroundColor: '#ef4444',
+                '&:hover': {
+                  backgroundColor: '#dc2626',
+                },
+              }}
+            >
+              {deleting ? (
+                <CircularProgress size={24} sx={{ color: 'white' }} />
+              ) : (
+                'Delete'
+              )}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Меню для действий с чатом */}
         <Menu
           anchorEl={anchorEl}
           open={Boolean(anchorEl)}
@@ -829,6 +1350,7 @@ const ChatsPage: React.FC = () => {
           <MenuItem onClick={() => {
             const newTitle = prompt('Enter new title:', selectedChat?.title);
             if (newTitle && selectedChat) {
+              // TODO: Реализовать обновление заголовка через API
               setChats(chats.map(chat =>
                 chat.id === selectedChat.id ? { ...chat, title: newTitle } : chat
               ));
@@ -840,7 +1362,8 @@ const ChatsPage: React.FC = () => {
           </MenuItem>
           <MenuItem onClick={() => {
             if (selectedChat) {
-              handleDeleteChat(selectedChat.id);
+              setChatToDelete(selectedChat);
+              setDeleteDialogOpen(true);
             }
             setAnchorEl(null);
           }}>
@@ -848,6 +1371,16 @@ const ChatsPage: React.FC = () => {
             Delete
           </MenuItem>
         </Menu>
+
+        {/* CSS анимация */}
+        <style>
+          {`
+            @keyframes fadeIn {
+              from { opacity: 0; transform: translateY(10px); }
+              to { opacity: 1; transform: translateY(0); }
+            }
+          `}
+        </style>
       </Container>
     </Box>
   );
