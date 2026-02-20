@@ -2,6 +2,7 @@ from pydantic import BaseModel, EmailStr
 from pydantic import ConfigDict
 from datetime import datetime
 from typing import Optional
+from app.auth.models import UserRole
 
 
 class UserBase(BaseModel):
@@ -22,6 +23,7 @@ class UserLogin(BaseModel):
 class UserResponse(UserBase):
     id: int
     is_active: bool
+    role: UserRole           # Роль теперь возвращается в ответе
     created_at: datetime
     is_superuser: Optional[bool] = False
 
@@ -36,3 +38,8 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     username: Optional[str] = None
+
+
+# Схема для изменения роли пользователя (только для admin)
+class UserRoleUpdate(BaseModel):
+    role: UserRole

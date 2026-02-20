@@ -5,7 +5,7 @@ import { Button } from '../ui/Button';
 
 interface ChatHistoryProps {
   chats: Chat[];
-  currentChatId: string | null;
+  currentChatId: number | null;
   onSelectChat: (chat: Chat) => void;
   onCreateChat: () => void;
   isOpen: boolean;
@@ -70,20 +70,20 @@ export const ChatHistory: React.FC<ChatHistoryProps> = ({
                         <p className="text-sm font-medium text-gray-900 truncate">
                           {chat.title || 'New Chat'}
                         </p>
-                        {chat.lastMessage && (
+                        {chat.last_message && (
                           <p className="text-xs text-gray-500 truncate mt-1">
-                            {chat.lastMessage}
+                            {chat.last_message}
                           </p>
                         )}
                       </div>
                       <span className="text-xs text-gray-400 ml-2">
-                        {format(new Date(chat.updatedAt), 'MMM d')}
+                        {format(new Date(chat.updated_at), 'MMM d')}
                       </span>
                     </div>
                     <div className="flex items-center mt-2">
                       <div className="w-2 h-2 rounded-full bg-primary-500"></div>
                       <span className="text-xs text-gray-500 ml-2">
-                        {chat.messages.length} messages
+                        {(chat.messages?.length ?? 0)} messages
                       </span>
                     </div>
                   </button>

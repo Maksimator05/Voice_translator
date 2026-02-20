@@ -6,11 +6,11 @@ import {
   Drawer,
   List,
   ListItem,
+  ListItemButton,
   ListItemText,
   IconButton,
   TextField,
   Paper,
-  CircularProgress
 } from '@mui/material';
 import MenuIcon from '@mui/icons-material/Menu';
 import AddIcon from '@mui/icons-material/Add';
@@ -22,7 +22,7 @@ import { fetchChats, createChat } from '../../store/chatSlice';
 
 export const ChatWindow: React.FC = () => {
   const dispatch = useAppDispatch();
-  const { chats, currentChat, isLoading } = useAppSelector((state) => state.chat);
+  const { chats, currentChat } = useAppSelector((state) => state.chat);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [message, setMessage] = useState('');
@@ -33,7 +33,7 @@ export const ChatWindow: React.FC = () => {
   }, [dispatch]);
 
   const handleCreateChat = async () => {
-    await dispatch(createChat());
+    await dispatch(createChat({}));
     setDrawerOpen(false);
   };
 
@@ -94,30 +94,29 @@ export const ChatWindow: React.FC = () => {
 
           <List>
             {chats.map((chat) => (
-              <ListItem
-                key={chat.id}
-                button
-                sx={{
-                  mb: 1,
-                  borderRadius: 1,
-                  backgroundColor: currentChat?.id === chat.id ? '#334155' : 'transparent',
-                  '&:hover': {
-                    backgroundColor: '#334155',
-                  },
-                }}
-              >
-                <ListItemText
-                  primary={
-                    <Typography variant="body1" sx={{ color: '#f1f5f9' }}>
-                      {chat.title || 'New Chat'}
-                    </Typography>
-                  }
-                  secondary={
-                    <Typography variant="body2" sx={{ color: '#94a3b8' }}>
-                      {chat.last_message || 'No messages yet'}
-                    </Typography>
-                  }
-                />
+              <ListItem key={chat.id} disablePadding sx={{ mb: 1 }}>
+                <ListItemButton
+                  selected={currentChat?.id === chat.id}
+                  sx={{
+                    borderRadius: 1,
+                    backgroundColor: currentChat?.id === chat.id ? '#334155' : 'transparent',
+                    '&:hover': { backgroundColor: '#334155' },
+                    '&.Mui-selected': { backgroundColor: '#334155' },
+                  }}
+                >
+                  <ListItemText
+                    primary={
+                      <Typography variant="body1" sx={{ color: '#f1f5f9' }}>
+                        {chat.title || 'New Chat'}
+                      </Typography>
+                    }
+                    secondary={
+                      <Typography variant="body2" sx={{ color: '#94a3b8' }}>
+                        {chat.last_message || 'No messages yet'}
+                      </Typography>
+                    }
+                  />
+                </ListItemButton>
               </ListItem>
             ))}
           </List>

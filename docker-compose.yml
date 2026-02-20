@@ -1,0 +1,44 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      # Персистентное хранилище БД и загруженных файлов
+      - backend_data:/app/data
+      - backend_uploads:/app/uploads
+    environment:
+      DATABASE_URL: sqlite:////app/data/meeting_analyzer.db
+      # LM Studio запущен на хост-машине → host.docker.internal
+      LM_STUDIO_URL: http://host.docker.internal:1234
+      LM_STUDIO_MODEL: ${LM_STUDIO_MODEL:-local-model}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-please}
+    # Нужно на Linux (на macOS/Windows Docker Desktop host.docker.internal уже доступен)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./fullstack-chat-frontend
+      dockerfile: Dockerfile
+      args:
+        # Относительный путь → nginx проксирует /api → backend:8000
+        VITE_API_URL: /api
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend_data:
+  backend_uploads:

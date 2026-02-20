@@ -5,13 +5,11 @@ import { useAppDispatch, useAppSelector } from '../../hooks/useRedux';
 import { login, clearError } from '../../store/authSlice';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
-import { Link } from 'react-router-dom';
 import {
   Visibility,
   VisibilityOff,
   Email,
   Lock,
-  Person,
 } from '@mui/icons-material';
 
 const validationSchema = Yup.object({

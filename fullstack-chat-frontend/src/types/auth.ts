@@ -1,9 +1,14 @@
+// src/types/auth.ts
+
+export type UserRole = 'guest' | 'user' | 'moderator' | 'admin';
+
 export interface User {
   id: number;
   email: string;
   username: string;
   created_at: string;
   is_active: boolean;
+  role: UserRole;        // Роль пользователя
 }
 
 export interface AuthState {
@@ -22,7 +27,7 @@ export interface RegisterCredentials {
   email: string;
   username: string;
   password: string;
-  confirmPassword?: string; // Для фронтенда
+  confirmPassword?: string;
 }
 
 export interface TokenResponse {

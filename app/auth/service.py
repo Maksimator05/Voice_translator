@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -7,32 +7,28 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.auth.models import User
+from app.auth.models import User, UserRole
 from app.auth.schemas import TokenData
 from app.database.connection import get_db
 
-# Настройки для хеширования паролей с argon2
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 security = HTTPBearer()
 
 
 def get_password_hash(password: str) -> str:
-    """Хеширует пароль с помощью argon2"""
     return pwd_context.hash(password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Проверяет пароль"""
     return pwd_context.verify(plain_password, hashed_password)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    """Создает JWT токен"""
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
@@ -89,3 +85,29 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
     if not current_user.is_active:
         raise HTTPException(status_code=400, detail="Неактивный пользователь")
     return current_user
+
+
+# ==================== RBAC ЗАВИСИМОСТИ ====================
+
+def require_role(*allowed_roles: UserRole):
+    """
+    Фабрика зависимостей: проверяет, что у текущего пользователя
+    есть одна из допустимых ролей. При нарушении возвращает 403.
+
+    Пример использования:
+        @app.delete("/admin/chats/{id}", dependencies=[Depends(require_role(UserRole.ADMIN, UserRole.MODERATOR))])
+    """
+    async def dependency(current_user: User = Depends(get_current_active_user)) -> User:
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Доступ запрещён. Требуется роль: {', '.join(r.value for r in allowed_roles)}"
+            )
+        return current_user
+    return dependency
+
+
+# Готовые зависимости для удобного использования
+require_admin = require_role(UserRole.ADMIN)
+require_moderator_or_admin = require_role(UserRole.MODERATOR, UserRole.ADMIN)
+require_user_or_above = require_role(UserRole.USER, UserRole.MODERATOR, UserRole.ADMIN)

@@ -3,7 +3,7 @@ import { format } from 'date-fns';
 
 interface MessageItemProps {
   message: {
-    id: number;
+    id: number | string;
     content: string;
     role: 'user' | 'assistant';
     message_type: 'text' | 'audio';

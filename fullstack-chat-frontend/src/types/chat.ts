@@ -6,7 +6,11 @@ export interface Message {
   created_at: string;
   audio_filename?: string;
   audio_transcription?: string;
+  audio_url?: string | null;
   chat_session_id?: number;
+  /** Используется в long polling и оптимистичных обновлениях */
+  chat_id?: number;
+  is_user?: boolean;
 }
 
 export interface Chat {
@@ -37,6 +41,8 @@ export interface ChatState {
   isLoading: boolean;
   isSending: boolean;
   error: string | null;
+  /** @deprecated Не используется — polling управляется через LongPollingService */
+  pollingInterval?: number | null;
 }
 
 // Тип для ответа от askAI эндпоинта

@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
-import { IconButton, CircularProgress, Box, Typography } from '@mui/material';
-import { Mic, MicOff, Stop } from '@mui/icons-material';
+import { IconButton, Box, Typography } from '@mui/material';
+import { Mic, Stop } from '@mui/icons-material';
 
 interface AudioRecorderProps {
   onRecordingComplete: (audioBlob: Blob) => void;
@@ -14,8 +14,7 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
-  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const startRecording = async () => {
     try {
@@ -37,7 +36,6 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
 
       recorder.start();
       setMediaRecorder(recorder);
-      setAudioChunks(chunks);
       setIsRecording(true);
       setRecordingTime(0);
 

@@ -1,15 +1,14 @@
 // src/api/longpolling.ts
 import axios, { CancelTokenSource } from 'axios';
 import { store } from "../store";
-import { addMessageFromPolling, updateChatFromPolling } from "../store/chatSlice";
+import { addMessageFromPolling } from "../store/chatSlice";
 
 type EventCallback = (data: any) => void;
 
 class LongPollingService {
-  private isPolling = false;
   private userId: number | null = null;
   private cancelTokenSource: CancelTokenSource | null = null;
-  private pollingTimeout: NodeJS.Timeout | null = null;
+  private pollingTimeout: ReturnType<typeof setTimeout> | null = null;
   private retryCount = 0;
   private maxRetries = 5;
   private retryDelay = 1000;
@@ -59,11 +58,10 @@ class LongPollingService {
     console.log('Long Polling started for user:', userId);
     this.userId = userId;
     this.pollingActive = true;
-    this.isPolling = true;
     this.retryCount = 0;
     this.lastUpdateTime = new Date().toISOString();
 
-    this.pollForUpdates();
+    void this.pollForUpdates();
   }
 
   private async pollForUpdates() {
@@ -89,8 +87,9 @@ class LongPollingService {
         return;
       }
 
+      const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
       const response = await axios.get(
-        `http://localhost:8000/api/longpolling/updates`,
+        `${baseUrl}/longpolling/updates`,
         {
           params: {
             user_id: this.userId,
@@ -119,16 +118,16 @@ class LongPollingService {
           if (update.type === 'new_message' && update.data && update.data.message) {
             const messageData = update.data.message;
             // Создаем корректный объект сообщения
+            const isUser = messageData.is_user || messageData.role === 'user';
             const message = {
               id: messageData.id,
               chat_id: update.data.chat_id,
               content: messageData.content || '',
-              message_type: messageData.message_type || 'text',
-              role: messageData.is_user ? 'user' : 'assistant',
-              is_user: messageData.is_user || messageData.role === 'user',
+              message_type: (messageData.message_type || 'text') as 'text' | 'audio',
+              role: (isUser ? 'user' : 'assistant') as 'user' | 'assistant',
+              is_user: isUser,
               created_at: messageData.created_at || new Date().toISOString(),
-              audio_url: messageData.audio_filename ?
-                `http://localhost:8000/api/audio/${messageData.audio_filename}` : null,
+              audio_url: null as string | null,
               audio_filename: messageData.audio_filename,
               audio_transcription: messageData.audio_transcription,
             };
@@ -148,11 +147,10 @@ class LongPollingService {
 
       // Сбрасываем счетчик попыток при успехе
       this.retryCount = 0;
-      this.isPolling = false;
 
       // Запускаем следующий запрос с небольшой задержкой
       if (this.pollingActive) {
-        setTimeout(() => this.pollForUpdates(), 100);
+        setTimeout(() => void this.pollForUpdates(), 100);
       }
 
     } catch (error: any) {
@@ -171,14 +169,13 @@ class LongPollingService {
       }
 
       this.retryCount++;
-      this.isPolling = false;
 
       if (this.retryCount < this.maxRetries) {
         const delay = this.retryDelay * Math.pow(2, this.retryCount - 1);
         console.log(`Retrying in ${delay}ms (attempt ${this.retryCount}/${this.maxRetries})`);
 
         if (this.pollingActive) {
-          this.pollingTimeout = setTimeout(() => this.pollForUpdates(), delay);
+          this.pollingTimeout = setTimeout(() => void this.pollForUpdates(), delay);
         }
       } else {
         console.error('Max retries reached. Stopping polling.');
@@ -190,7 +187,6 @@ class LongPollingService {
   stopPolling() {
     console.log('Long Polling stopped');
     this.pollingActive = false;
-    this.isPolling = false;
     this.userId = null;
     this.retryCount = 0;
 

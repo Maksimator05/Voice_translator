@@ -1,11 +1,9 @@
 import asyncio
 import base64
-import json
-import sys
-import os
 import tempfile
+import os
 
-from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, Form, Query
+from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, Form
 from datetime import datetime
 import logging
 from typing import List, Optional, Dict
@@ -13,15 +11,19 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 
-
 from app.models.chat_models import ChatMessage
-
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import settings
-from app.auth.service import get_current_active_user, create_access_token, authenticate_user, get_password_hash
-from app.auth.schemas import UserCreate, UserLogin, Token, UserResponse
-from app.auth.models import User
+from app.auth.service import (
+    get_current_active_user,
+    create_access_token,
+    authenticate_user,
+    get_password_hash,
+    require_admin,
+    require_moderator_or_admin,
+    require_user_or_above,
+)
+from app.auth.schemas import UserCreate, UserLogin, Token, UserResponse, UserRoleUpdate
+from app.auth.models import User, UserRole
 from app.database.connection import get_db, create_tables
 from app.services.chat_service import ChatService
 from app.models.chat_schemas import (
@@ -29,9 +31,10 @@ from app.models.chat_schemas import (
     ChatSessionResponse,
     ChatMessageCreate,
     ChatMessageResponse,
-    ChatSessionListResponse, DeleteChatResponse
+    ChatSessionListResponse,
+    DeleteChatResponse,
 )
-from app.services.llm_processor import llm_processor, LLMProcessor
+from app.services.llm_processor import LLMProcessor
 from app.services.audio_processor import audio_processor
 
 logging.basicConfig(level=logging.INFO)
@@ -43,93 +46,427 @@ app = FastAPI(
     version=settings.VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
-    max_request_size=50 * 1024 * 1024,  # 50MB вместо стандартных 1MB
+    max_request_size=50 * 1024 * 1024,
 )
 
+# Long polling: словарь очередей для каждого пользователя
 long_polling_connections: Dict[int, List[asyncio.Queue]] = {}
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_credentials=True,
+    allow_headers=["*"],
+)
+
+llm_processor = LLMProcessor()
+
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("🔄 Инициализация Intelligent Meeting Analyzer...")
+    try:
+        create_tables()
+        logger.info("✅ База данных инициализирована")
+    except Exception as e:
+        logger.error(f"❌ Не удалось инициализировать БД: {e}")
+
+    try:
+        await llm_processor.initialize_model()
+        logger.info("✅ LLM процессор инициализирован")
+    except Exception as e:
+        logger.error(f"❌ Не удалось инициализировать LLM процессор: {e}")
+
+
+# ==================== ЭНДПОИНТЫ АУТЕНТИФИКАЦИИ ====================
+
+@app.post("/api/auth/register", response_model=Token)
+async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+    if db.query(User).filter(User.email == user_data.email).first():
+        raise HTTPException(status_code=400, detail="Пользователь с таким email уже зарегистрирован")
+
+    if db.query(User).filter(User.username == user_data.username).first():
+        raise HTTPException(status_code=400, detail="Пользователь с таким именем уже существует")
+
+    db_user = User(
+        email=user_data.email,
+        username=user_data.username,
+        hashed_password=get_password_hash(user_data.password),
+        role=UserRole.USER,
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    access_token = create_access_token(data={"sub": db_user.username})
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user=UserResponse.from_orm(db_user),
+    )
+
+
+@app.post("/api/auth/login", response_model=Token)
+async def login(user_data: UserLogin, db: Session = Depends(get_db)):
+    user = authenticate_user(db, user_data.email, user_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный email или пароль",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(data={"sub": user.username})
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user=UserResponse.from_orm(user),
+    )
+
+
+@app.get("/api/auth/me", response_model=UserResponse)
+async def get_me(current_user: User = Depends(get_current_active_user)):
+    return UserResponse.from_orm(current_user)
+
+
+# ==================== ЭНДПОИНТЫ ЧАТОВ ====================
+
+@app.post("/api/chats", response_model=ChatSessionResponse)
+async def create_chat(
+    chat_data: ChatSessionCreate,
+    current_user: User = Depends(require_user_or_above),
+    db: Session = Depends(get_db),
+):
+    """Создание нового чата. Доступно: user, moderator, admin."""
+    try:
+        chat_service = ChatService(db)
+        return chat_service.create_chat_session(current_user.id, chat_data)
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания чата: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка создания чата")
+
+
+@app.get("/api/chats", response_model=List[ChatSessionListResponse])
+async def get_chats(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Получение списка чатов. Moderator/Admin видят все чаты."""
+    try:
+        chat_service = ChatService(db)
+        if current_user.role in (UserRole.MODERATOR, UserRole.ADMIN):
+            return chat_service.get_all_chat_sessions()
+        return chat_service.get_user_chat_sessions(current_user.id)
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения списка чатов: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка получения чатов")
+
+
+@app.get("/api/chats/{chat_id}", response_model=ChatSessionResponse)
+async def get_chat(
+    chat_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Получение чата. Moderator/Admin могут смотреть чужие чаты."""
+    try:
+        chat_service = ChatService(db)
+        if current_user.role in (UserRole.MODERATOR, UserRole.ADMIN):
+            chat_session = chat_service.get_chat_session_by_id(chat_id)
+        else:
+            chat_session = chat_service.get_chat_session(chat_id, current_user.id)
+
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+        return chat_session
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения чата: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка получения чата")
+
+
+@app.post("/api/chats/{chat_id}/messages", response_model=ChatMessageResponse)
+async def add_message(
+    chat_id: int,
+    message_data: ChatMessageCreate,
+    current_user: User = Depends(require_user_or_above),
+    db: Session = Depends(get_db),
+):
+    """Отправка сообщения. Доступно: user, moderator, admin."""
+    try:
+        chat_service = ChatService(db)
+
+        audio_file_path = None
+        if message_data.audio_data:
+            try:
+                audio_bytes = base64.b64decode(message_data.audio_data.split(",")[1])
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+                    temp_file.write(audio_bytes)
+                    audio_file_path = temp_file.name
+            except Exception as e:
+                logger.error(f"❌ Ошибка обработки аудио: {e}")
+                raise HTTPException(status_code=400, detail="Неверный формат аудио")
+
+        message = await chat_service.add_message_to_chat(
+            chat_id, current_user.id, message_data, audio_file_path
+        )
+
+        if audio_file_path and os.path.exists(audio_file_path):
+            os.unlink(audio_file_path)
+
+        update_data = {
+            "type": "new_message",
+            "data": {
+                "chat_id": chat_id,
+                "message": {
+                    "id": message.id,
+                    "content": message.content,
+                    "role": message.role,
+                    "message_type": message.message_type,
+                    "created_at": message.created_at.isoformat(),
+                    "audio_filename": message.audio_filename,
+                    "audio_transcription": message.audio_transcription,
+                },
+            },
+        }
+        await broadcast_update(current_user.id, update_data)
+
+        return message
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ Ошибка добавления сообщения: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка добавления сообщения")
+
+
+@app.post("/api/chats/{chat_id}/ask")
+async def ask_llm(
+    chat_id: int,
+    message: str = Form(None),
+    audio_file: Optional[UploadFile] = File(None),
+    current_user: User = Depends(require_user_or_above),
+    db: Session = Depends(get_db),
+):
+    """Запрос к AI. Доступно: user, moderator, admin."""
+    try:
+        if not message and not audio_file:
+            raise HTTPException(status_code=400, detail="Нужно сообщение или аудио")
+
+        chat_service = ChatService(db)
+
+        # Moderator/Admin могут отправлять запросы в любой чат
+        if current_user.role in (UserRole.MODERATOR, UserRole.ADMIN):
+            chat = chat_service.get_chat_session_by_id(chat_id)
+        else:
+            chat = chat_service.get_chat_session(chat_id, current_user.id)
+
+        if not chat:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+
+        audio_transcription = None
+        if audio_file and audio_file.filename:
+            audio_transcription = await audio_processor.process_audio_file(audio_file, llm_processor)
+
+        message_content = message or ""
+        if audio_transcription and not message_content:
+            message_content = "[Аудиосообщение]"
+
+        message_data = ChatMessageCreate(
+            content=message_content,
+            role="user",
+            message_type="audio" if audio_file else "text",
+            audio_filename=audio_file.filename if audio_file else None,
+            audio_transcription=audio_transcription,
+        )
+
+        # Для mod/admin используем owner_id чата, а не current_user.id
+        owner_id = chat.user_id
+        user_message_obj = await chat_service.add_message_to_chat(chat_id, owner_id, message_data)
+
+        ai_prompt = message or ""
+        if audio_transcription and audio_transcription not in (
+            "[Транскрипция не удалась]", "[Транскрипция пустая]"
+        ) and not audio_transcription.startswith("[Ошибка:"):
+            ai_prompt = (ai_prompt + f"\n\nТранскрипция аудио: {audio_transcription}").strip()
+
+        try:
+            chat_history = chat_service.get_chat_messages(chat_id, owner_id, limit=10)
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения истории: {e}")
+            chat_history = []
+
+        context_messages = [{"role": m.role, "content": m.content} for m in chat_history]
+        ai_response = await llm_processor.generate_chat_response(ai_prompt, context_messages)
+
+        ai_msg_data = ChatMessageCreate(content=ai_response, role="assistant", message_type="text")
+        ai_message_obj = await chat_service.add_message_to_chat(chat_id, owner_id, ai_msg_data)
+
+        return {
+            "user_message": user_message_obj,
+            "ai_response": ai_message_obj,
+            "chat_id": chat_id,
+            "audio_transcription": audio_transcription,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Ошибка в AI чате: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка обработки запроса")
+
+
+@app.delete("/api/chats/{chat_id}", response_model=DeleteChatResponse)
+async def delete_chat(
+    chat_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Удаление чата. Moderator/Admin могут удалить любой чат."""
+    try:
+        chat_service = ChatService(db)
+
+        if current_user.role in (UserRole.MODERATOR, UserRole.ADMIN):
+            chat = chat_service.get_chat_session_by_id(chat_id)
+        else:
+            chat = chat_service.get_chat_session(chat_id, current_user.id)
+
+        if not chat:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+
+        messages_count = db.query(ChatMessage).filter(
+            ChatMessage.chat_session_id == chat_id
+        ).count()
+
+        # Передаём owner_id чата — это нужно для корректного поиска в БД
+        await chat_service.delete_chat_session(chat_id, chat.user_id)
+
+        return DeleteChatResponse(
+            success=True,
+            message="Чат успешно удалён",
+            deleted_chat_id=chat_id,
+            deleted_messages_count=messages_count,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ Ошибка удаления чата {chat_id}: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка удаления чата")
+
+
+# ==================== ЭНДПОИНТЫ АДМИНИСТРАТОРА ====================
+
+@app.get("/api/admin/users", response_model=List[UserResponse])
+async def get_all_users(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Список всех пользователей. Только admin."""
+    users = db.query(User).all()
+    return [UserResponse.from_orm(u) for u in users]
+
+
+@app.patch("/api/admin/users/{user_id}/role", response_model=UserResponse)
+async def update_user_role(
+    user_id: int,
+    role_data: UserRoleUpdate,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Изменение роли пользователя. Только admin. Нельзя менять свою роль."""
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Нельзя изменить собственную роль")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    user.role = role_data.role
+    db.commit()
+    db.refresh(user)
+
+    logger.info(f"Admin {current_user.username} изменил роль {user.username} на {role_data.role}")
+    return UserResponse.from_orm(user)
+
+
+@app.patch("/api/admin/users/{user_id}/activate", response_model=UserResponse)
+async def toggle_user_active(
+    user_id: int,
+    is_active: bool,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Активация/деактивация пользователя. Только admin."""
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Нельзя деактивировать самого себя")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    user.is_active = is_active
+    db.commit()
+    db.refresh(user)
+    return UserResponse.from_orm(user)
+
+
+# ==================== LONG POLLING ====================
 
 @app.get("/api/longpolling/updates")
 async def get_updates(
-        user_id: int,
-        since: str,
-        current_user: User = Depends(get_current_active_user),
-        db: Session = Depends(get_db)
+    user_id: int,
+    since: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
-    """Long Polling эндпоинт для получения обновлений"""
-
-    # Проверяем что пользователь запрашивает свои обновления
     if current_user.id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Преобразуем время since
-    since_time = datetime.fromisoformat(since.replace('Z', '+00:00'))
+    since_time = datetime.fromisoformat(since.replace("Z", "+00:00"))
+    updates_queue: asyncio.Queue = asyncio.Queue()
 
-    # Ждем обновлений с таймаутом
-    updates_queue = asyncio.Queue()
-
-    # Добавляем очередь в хранилище
     if user_id not in long_polling_connections:
         long_polling_connections[user_id] = []
     long_polling_connections[user_id].append(updates_queue)
 
     try:
-        # Проверяем сразу есть ли обновления
         immediate_updates = await check_immediate_updates(user_id, since_time, db)
         if immediate_updates:
-            # Убираем из очереди
             long_polling_connections[user_id].remove(updates_queue)
-            return {
-                "updates": immediate_updates,
-                "last_update": datetime.now().isoformat()
-            }
+            return {"updates": immediate_updates, "last_update": datetime.now().isoformat()}
 
-        # Ждем обновлений с таймаутом (25 секунд)
-        timeout = 25
         try:
-            update = await asyncio.wait_for(updates_queue.get(), timeout=timeout)
-
-            # Убираем из очереди
+            update = await asyncio.wait_for(updates_queue.get(), timeout=25)
             long_polling_connections[user_id].remove(updates_queue)
-
-            return {
-                "updates": [update],
-                "last_update": datetime.now().isoformat()
-            }
+            return {"updates": [update], "last_update": datetime.now().isoformat()}
         except asyncio.TimeoutError:
-            # Таймаут - возвращаем пустой ответ
             long_polling_connections[user_id].remove(updates_queue)
-            return {
-                "updates": [],
-                "last_update": since
-            }
+            return {"updates": [], "last_update": since}
 
     except Exception as e:
-        # Очищаем при ошибке
         if user_id in long_polling_connections and updates_queue in long_polling_connections[user_id]:
             long_polling_connections[user_id].remove(updates_queue)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 async def check_immediate_updates(user_id: int, since_time: datetime, db: Session):
-    """Проверка немедленных обновлений из БД"""
     try:
         updates = []
-
-        # Проверяем новые сообщения в чатах пользователя
-        from app.services.chat_service import ChatService
         chat_service = ChatService(db)
-
-        # Получаем чаты пользователя
         user_chats = chat_service.get_user_chat_sessions(user_id)
 
         for chat in user_chats:
-            # Получаем новые сообщения
-            new_messages = db.query(ChatMessage).filter(
-                ChatMessage.chat_session_id == chat.id,
-                ChatMessage.created_at > since_time
-            ).order_by(ChatMessage.created_at.desc()).limit(10).all()
-
+            new_messages = (
+                db.query(ChatMessage)
+                .filter(
+                    ChatMessage.chat_session_id == chat.id,
+                    ChatMessage.created_at > since_time,
+                )
+                .order_by(ChatMessage.created_at.desc())
+                .limit(10)
+                .all()
+            )
             for message in new_messages:
                 updates.append({
                     "type": "new_message",
@@ -142,593 +479,70 @@ async def check_immediate_updates(user_id: int, since_time: datetime, db: Sessio
                             "message_type": message.message_type,
                             "created_at": message.created_at.isoformat(),
                             "audio_filename": message.audio_filename,
-                            "audio_transcription": message.audio_transcription
-                        }
-                    }
+                            "audio_transcription": message.audio_transcription,
+                        },
+                    },
                 })
-
         return updates
-
     except Exception as e:
-        print(f"Error checking immediate updates: {e}")
+        logger.error(f"Ошибка при проверке немедленных обновлений: {e}")
         return []
 
 
 async def broadcast_update(user_id: int, update_data: dict):
-    """Отправка обновления всем подключенным клиентам пользователя"""
-    if user_id in long_polling_connections:
-        for queue in long_polling_connections[user_id][:]:  # Копируем список
-            try:
-                await queue.put(update_data)
-            except Exception as e:
-                print(f"Error broadcasting to user {user_id}: {e}")
-                # Удаляем сломанную очередь
-                long_polling_connections[user_id].remove(queue)
-
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_credentials=True, allow_headers=["*"])
-
-llm_processor = LLMProcessor()
-content_processor = None
-FileService = None
-processing_tasks = {}
-
-def get_content_processor():
-    global content_processor
-    if content_processor is None:
-        from app.services.meeting_analyzer import ContentProcessor
-        content_processor = ContentProcessor()
-    return content_processor
-
-
-def get_llm_processor():
-    """Основной процессор для всех AI задач"""
-    return llm_processor
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Инициализация при запуске"""
-    logger.info("🔄 Инициализация Intelligent Meeting Analyzer...")
-
-    try:
-        create_tables()
-        logger.info("✅ База данных инициализирована")
-    except Exception as e:
-        logger.error(f"❌ Не удалось инициализировать БД: {e}")
-
-    # Инициализация LLM процессора
-    try:
-        processor = get_llm_processor()
-        await processor.initialize_model()
-        logger.info("✅ LLM процессор инициализирован")
-    except Exception as e:
-        logger.error(f"❌ Не удалось инициализировать LLM процессор: {e}")
-
-
-# ==================== ЭНДПОИНТЫ АУТЕНТИФИКАЦИИ ====================
-
-@app.post("/api/auth/register", response_model=Token)
-async def register(user_data: UserCreate, db: Session = Depends(get_db)):
-    """Регистрация нового пользователя"""
-    db_user_email = db.query(User).filter(User.email == user_data.email).first()
-    if db_user_email:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Пользователь с таким email уже зарегистрирован"
-        )
-
-    db_user_username = db.query(User).filter(User.username == user_data.username).first()
-    if db_user_username:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Пользователь с таким именем уже существует"
-        )
-
-    hashed_password = get_password_hash(user_data.password)
-    db_user = User(
-        email=user_data.email,
-        username=user_data.username,
-        hashed_password=hashed_password
-    )
-
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-
-    access_token = create_access_token(data={"sub": db_user.username})
-
-    return Token(
-        access_token=access_token,
-        token_type="bearer",
-        user=UserResponse.from_orm(db_user)
-    )
-
-
-@app.post("/api/auth/login", response_model=Token)
-async def login(user_data: UserLogin, db: Session = Depends(get_db)):
-    """Вход пользователя"""
-    user = authenticate_user(db, user_data.email, user_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный email или пароль",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    access_token = create_access_token(data={"sub": user.username})
-
-    return Token(
-        access_token=access_token,
-        token_type="bearer",
-        user=UserResponse.from_orm(user)
-    )
-
-
-@app.get("/api/auth/me", response_model=UserResponse)
-async def get_me(current_user: User = Depends(get_current_active_user)):
-    """Получение информации о текущем пользователе"""
-    return UserResponse.from_orm(current_user)
-
-
-# ==================== ЭНДПОИНТЫ ЧАТОВ ====================
-
-@app.post("/api/chats", response_model=ChatSessionResponse)
-async def create_chat(
-        chat_data: ChatSessionCreate,
-        current_user: User = Depends(get_current_active_user),
-        db: Session = Depends(get_db)
-):
-    """Создание нового чата"""
-    try:
-        chat_service = ChatService(db)
-        chat_session = chat_service.create_chat_session(current_user.id, chat_data)
-        return chat_session
-    except Exception as e:
-        logger.error(f"❌ Ошибка создания чата: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка создания чата")
-
-
-@app.get("/api/chats", response_model=List[ChatSessionListResponse])
-async def get_chats(
-        current_user: User = Depends(get_current_active_user),
-        db: Session = Depends(get_db)
-):
-    """Получение списка чатов пользователя"""
-    try:
-        chat_service = ChatService(db)
-        chats = chat_service.get_user_chat_sessions(current_user.id)
-        return chats
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения списка чатов: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка получения чатов")
-
-
-@app.get("/api/chats/{chat_id}", response_model=ChatSessionResponse)
-async def get_chat(
-        chat_id: int,
-        current_user: User = Depends(get_current_active_user),
-        db: Session = Depends(get_db)
-):
-    """Получение конкретного чата с сообщениями"""
-    try:
-        chat_service = ChatService(db)
-        chat_session = chat_service.get_chat_session(chat_id, current_user.id)
-
-        if not chat_session:
-            raise HTTPException(status_code=404, detail="Чат не найден")
-
-        return chat_session
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения чата: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка получения чата")
-
-
-@app.post("/api/chats/{chat_id}/messages", response_model=ChatMessageResponse)
-async def add_message(
-        chat_id: int,
-        message_data: ChatMessageCreate,
-        current_user: User = Depends(get_current_active_user),
-        db: Session = Depends(get_db)
-):
-    try:
-        chat_service = ChatService(db)
-        message = await chat_service.add_message_to_chat(chat_id, current_user.id, message_data)
-
-        # Отправляем обновление через Long Polling
-        update_data = {
-            "type": "new_message",
-            "data": {
-                "chat_id": chat_id,
-                "message": {
-                    "id": message.id,
-                    "content": message.content,
-                    "role": message.role,
-                    "message_type": message.message_type,
-                    "created_at": message.created_at.isoformat(),
-                    "audio_filename": message.audio_filename,
-                    "audio_transcription": message.audio_transcription
-                }
-            }
-        }
-
-        # Отправляем обновление отправителю
-        await broadcast_update(current_user.id, update_data)
-
-        # Если это групповой чат, отправляем другим участникам
-        # (здесь можно добавить логику для групповых чатов)
-
-        return message
-
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"❌ Ошибка добавления сообщения: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка добавления сообщения")
-
-
-@app.post("/api/chats/{chat_id}/messages", response_model=ChatMessageResponse, operation_id="add_message_to_chat")
-async def add_message(
-        chat_id: int,
-        message_data: ChatMessageCreate,
-        current_user: User = Depends(get_current_active_user),
-        db: Session = Depends(get_db)
-):
-    """Добавление сообщения с опциональным аудио"""
-    try:
-        chat_service = ChatService(db)
-
-        audio_file_path = None
-
-        # Обрабатываем аудио если есть
-        if message_data.audio_data:
-            try:
-                # Декодируем base64 аудио
-                audio_bytes = base64.b64decode(message_data.audio_data.split(',')[1])
-
-                # Сохраняем во временный файл
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
-                    temp_file.write(audio_bytes)
-                    audio_file_path = temp_file.name
-
-            except Exception as e:
-                logger.error(f"❌ Ошибка обработки аудио: {e}")
-                raise HTTPException(status_code=400, detail="Неверный формат аудио")
-
-        message = await chat_service.add_message_to_chat(
-            chat_id,
-            current_user.id,
-            message_data,
-            audio_file_path
-        )
-
-        # Удаляем временный файл если он был создан
-        if audio_file_path and os.path.exists(audio_file_path):
-            os.unlink(audio_file_path)
-
-        return message
-
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"❌ Ошибка добавления сообщения: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка добавления сообщения")
-
-
-@app.post("/api/chats/{chat_id}/ask")
-async def ask_llm(
-        chat_id: int,
-        message: str = Form(None),
-        audio_file: Optional[UploadFile] = File(None),
-        current_user: User = Depends(get_current_active_user),
-        db: Session = Depends(get_db)
-):
-    try:
-        if not message and not audio_file:
-            raise HTTPException(status_code=400, detail="Нужно сообщение или аудио")
-
-        chat_service = ChatService(db)
-
-        if not chat_service.get_chat_session(chat_id, current_user.id):
-            raise HTTPException(status_code=404, detail="Чат не найден")
-
-        audio_transcription = None
-
-        # Обрабатываем аудиофайл если он есть
-        if audio_file and audio_file.filename:
-
-            llm_processor = get_llm_processor()
-            audio_transcription = await audio_processor.process_audio_file(audio_file, llm_processor)
-
-        # Создаем сообщение
-        message_content = message or ""
-        if audio_transcription and not message_content:
-            message_content = "[Аудиосообщение]"
-
-        message_data = ChatMessageCreate(
-            content=message_content,
-            role="user",
-            message_type="audio" if audio_file else "text",
-            audio_filename=audio_file.filename if audio_file else None,
-            audio_transcription=audio_transcription
-        )
-
-        user_message_obj = await chat_service.add_message_to_chat(
-            chat_id,
-            current_user.id,
-            message_data
-        )
-
-        # Формируем контент для AI
-        ai_prompt = message or ""
-        if audio_transcription and not audio_transcription.startswith("[Ошибка:") and audio_transcription not in [
-            "[Транскрипция не удалась]", "[Транскрипция пустая]"]:
-            if ai_prompt:
-                ai_prompt += f"\n\nТранскрипция аудио: {audio_transcription}"
-            else:
-                ai_prompt = f"Транскрипция аудио: {audio_transcription}"
-
-        # Получаем историю сообщений
+    if user_id not in long_polling_connections:
+        return
+    for queue in long_polling_connections[user_id][:]:
         try:
-            chat_history = chat_service.get_chat_messages(chat_id, current_user.id, limit=10)
+            await queue.put(update_data)
         except Exception as e:
-            logger.error(f"❌ Ошибка получения истории чата: {e}")
-            chat_history = []
-
-        # Формируем промпт с историей
-        context_messages = []
-        for msg in chat_history:
-            context_messages.append({
-                "role": msg.role,
-                "content": msg.content
-            })
-
-        # Получаем ответ от LLM
-        llm_processor = get_llm_processor()
-        ai_response = await llm_processor.generate_chat_response(ai_prompt, context_messages)
-
-        # Сохраняем ответ AI
-        ai_msg_data = ChatMessageCreate(
-            content=ai_response,
-            role="assistant",
-            message_type="text"
-        )
-        ai_message_obj = await chat_service.add_message_to_chat(chat_id, current_user.id, ai_msg_data)
-
-        return {
-            "user_message": user_message_obj,
-            "ai_response": ai_message_obj,
-            "chat_id": chat_id,
-            "audio_transcription": audio_transcription
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Ошибка в AI чате: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка обработки запроса")
+            logger.error(f"Ошибка трансляции для пользователя {user_id}: {e}")
+            long_polling_connections[user_id].remove(queue)
 
 
-
-# ОБЩИЕ ЭНДПОИНТЫ
+# ==================== ОБЩИЕ ЭНДПОИНТЫ ====================
 
 @app.get("/")
 async def root():
-    """Корневой эндпоинт"""
-
     return {
-        "message": "Intelligent Meeting Analyzer API с аутентификацией работает!",
+        "message": "Intelligent Meeting Analyzer API с RBAC работает!",
         "version": settings.VERSION,
         "status": "active",
-        "features": {
-            "authentication": True,
-            "transcription": True,
-            "speaker_diarization": True,
-            "llm_processing": True,
-            "meeting_analysis": True,
-            "chat_system": True
-        },
-        "endpoints": {
-            "auth": {
-                "register": "/api/auth/register",
-                "login": "/api/auth/login",
-                "me": "/api/auth/me"
-            },
-            "chats": {
-                "create_chat": "/api/chats",
-                "list_chats": "/api/chats",
-                "get_chat": "/api/chats/{chat_id}",
-                "add_message": "/api/chats/{chat_id}/messages",
-                "ask_ai": "/api/chats/{chat_id}/ask"
-            },
-            "analysis": {
-                "analyze_meeting": "/api/analyze-meeting",
-                "transcribe_simple": "/api/transcribe-simple",
-                "diarize_speakers": "/api/diarize-speakers"
-            },
-            "info": {
-                "health": "/api/health",
-                "docs": "/docs"
-            }
-        }
     }
 
 
 @app.get("/api/health")
 async def health_check():
-    """Проверка здоровья сервиса"""
-
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "services": {
             "database": "connected",
             "authentication": "enabled",
+            "rbac": "enabled",
             "llm_processor": "available",
-            "file_processing": "available"
-        }
+        },
     }
 
 
-@app.delete("/api/chats/{chat_id}", response_model=DeleteChatResponse)
-async def delete_chat(
-        chat_id: int,
-        current_user: User = Depends(get_current_active_user),
-        db: Session = Depends(get_db)
-):
-    """Удаление чата"""
-    try:
-        chat_service = ChatService(db)
-
-        # Получаем информацию о чате перед удалением для ответа
-        chat = chat_service.get_chat_session(chat_id, current_user.id)
-        if not chat:
-            raise HTTPException(status_code=404, detail="Чат не найден")
-
-        # Получаем количество сообщений для ответа
-        messages_count = db.query(ChatMessage).filter(
-            ChatMessage.chat_session_id == chat_id
-        ).count()
-
-        # Удаляем чат
-        success = await chat_service.delete_chat_session(chat_id, current_user.id)
-
-        if success:
-            return DeleteChatResponse(
-                success=True,
-                message="Чат успешно удален",
-                deleted_chat_id=chat_id,
-                deleted_messages_count=messages_count
-            )
-        else:
-            raise HTTPException(status_code=500, detail="Не удалось удалить чат")
-
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"❌ Ошибка удаления чата {chat_id}: {e}")
-        raise HTTPException(status_code=500, detail="Ошибка удаления чата")
-
-
-# ===== ФОНОВЫЕ ЗАДАЧИ =====
-
-async def process_audio_background(task_id: str, filepath: str, language: str, enable_analysis: bool):
-    """
-    Фоновая обработка аудиофайла
-    """
-    try:
-        # Обновляем статус задачи
-        processing_tasks[task_id]["status"] = "transcribing"
-
-        # Выполняем транскрипцию
-        transcription_result = await llm_processor.transcribe_with_speaker_detection(filepath, language)
-
-        if not transcription_result["success"]:
-            processing_tasks[task_id].update({
-                "status": "error",
-                "result": {"error": "Транскрипция не удалась"},
-                "completed_at": datetime.now().isoformat()
-            })
-            return
-
-        # Если анализ отключен, возвращаем только транскрипцию
-        if not enable_analysis:
-            final_result = {
-                "success": True,
-                "task_id": task_id,
-                "filename": os.path.basename(filepath),
-                "transcription": transcription_result,
-                "analysis": None,
-                "processing_time": datetime.now().isoformat()
-            }
-
-            processing_tasks[task_id].update({
-                "status": "completed",
-                "result": final_result,
-                "completed_at": datetime.now().isoformat()
-            })
-
-            # Удаляем временный файл
-            try:
-                os.remove(filepath)
-            except:
-                pass
-            return
-
-        # Обновляем статус задачи
-        processing_tasks[task_id]["status"] = "analyzing"
-
-        # Анализируем содержание
-        analysis_result = await llm_processor.analyze_meeting_content(
-            transcription_result["text"],
-            transcription_result.get("duration", 0),
-            transcription_result.get("segments", [])
-        )
-
-        # Формируем финальный результат
-        final_result = {
-            "success": True,
-            "task_id": task_id,
-            "filename": os.path.basename(filepath),
-            "transcription": transcription_result,
-            "analysis": analysis_result,
-            "processing_time": datetime.now().isoformat()
-        }
-
-        # Сохраняем результат
-        processing_tasks[task_id].update({
-            "status": "completed",
-            "result": final_result,
-            "completed_at": datetime.now().isoformat()
-        })
-
-        logger.info(f"✅ Задача {task_id} завершена успешно")
-
-        # Удаляем временный файл
-        try:
-            os.remove(filepath)
-        except:
-            pass
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки аудио (task {task_id}): {e}")
-        processing_tasks[task_id].update({
-            "status": "error",
-            "result": {"error": str(e)},
-            "completed_at": datetime.now().isoformat()
-        })
-
-        # Удаляем временный файл при ошибке
-        try:
-            os.remove(filepath)
-        except:
-            pass
-
-
-# ОБРАБОТЧИКИ ОШИБОК
-
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
-    """Обработчик HTTP исключений"""
     logger.warning(f"HTTP ошибка {exc.status_code}: {exc.detail}")
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": exc.detail, "status_code": exc.status_code}
+        content={"error": exc.detail, "status_code": exc.status_code},
     )
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    """Глобальный обработчик исключений"""
     logger.error(f"Необработанное исключение: {exc}")
     return JSONResponse(
         status_code=500,
-        content={"error": "Внутренняя ошибка сервера", "status_code": 500}
+        content={"error": "Внутренняя ошибка сервера", "status_code": 500},
     )
 
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
