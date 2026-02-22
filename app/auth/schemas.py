@@ -23,7 +23,7 @@ class UserLogin(BaseModel):
 class UserResponse(UserBase):
     id: int
     is_active: bool
-    role: UserRole           # Роль теперь возвращается в ответе
+    role: UserRole
     created_at: datetime
     is_superuser: Optional[bool] = False
 

@@ -19,7 +19,6 @@ from app.auth.service import (
     authenticate_user,
     get_password_hash,
     require_admin,
-    require_moderator_or_admin,
     require_user_or_above,
 )
 from app.auth.schemas import UserCreate, UserLogin, Token, UserResponse, UserRoleUpdate
@@ -137,7 +136,7 @@ async def create_chat(
     current_user: User = Depends(require_user_or_above),
     db: Session = Depends(get_db),
 ):
-    """Создание нового чата. Доступно: user, moderator, admin."""
+    """Создание нового чата. Доступно: user, admin."""
     try:
         chat_service = ChatService(db)
         return chat_service.create_chat_session(current_user.id, chat_data)
@@ -151,10 +150,10 @@ async def get_chats(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Получение списка чатов. Moderator/Admin видят все чаты."""
+    """Получение списка чатов. Admin видит все чаты."""
     try:
         chat_service = ChatService(db)
-        if current_user.role in (UserRole.MODERATOR, UserRole.ADMIN):
+        if current_user.role == UserRole.ADMIN:
             return chat_service.get_all_chat_sessions()
         return chat_service.get_user_chat_sessions(current_user.id)
     except Exception as e:
@@ -168,10 +167,10 @@ async def get_chat(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Получение чата. Moderator/Admin могут смотреть чужие чаты."""
+    """Получение чата. Admin может смотреть чужие чаты."""
     try:
         chat_service = ChatService(db)
-        if current_user.role in (UserRole.MODERATOR, UserRole.ADMIN):
+        if current_user.role == UserRole.ADMIN:
             chat_session = chat_service.get_chat_session_by_id(chat_id)
         else:
             chat_session = chat_service.get_chat_session(chat_id, current_user.id)
@@ -193,7 +192,7 @@ async def add_message(
     current_user: User = Depends(require_user_or_above),
     db: Session = Depends(get_db),
 ):
-    """Отправка сообщения. Доступно: user, moderator, admin."""
+    """Отправка сообщения. Доступно: user, admin."""
     try:
         chat_service = ChatService(db)
 
@@ -248,15 +247,15 @@ async def ask_llm(
     current_user: User = Depends(require_user_or_above),
     db: Session = Depends(get_db),
 ):
-    """Запрос к AI. Доступно: user, moderator, admin."""
+    """Запрос к AI. Доступно: user, admin."""
     try:
         if not message and not audio_file:
             raise HTTPException(status_code=400, detail="Нужно сообщение или аудио")
 
         chat_service = ChatService(db)
 
-        # Moderator/Admin могут отправлять запросы в любой чат
-        if current_user.role in (UserRole.MODERATOR, UserRole.ADMIN):
+        # Admin может отправлять запросы в любой чат
+        if current_user.role == UserRole.ADMIN:
             chat = chat_service.get_chat_session_by_id(chat_id)
         else:
             chat = chat_service.get_chat_session(chat_id, current_user.id)
@@ -280,7 +279,7 @@ async def ask_llm(
             audio_transcription=audio_transcription,
         )
 
-        # Для mod/admin используем owner_id чата, а не current_user.id
+        # Для admin используем owner_id чата, а не current_user.id
         owner_id = chat.user_id
         user_message_obj = await chat_service.add_message_to_chat(chat_id, owner_id, message_data)
 
@@ -321,11 +320,11 @@ async def delete_chat(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Удаление чата. Moderator/Admin могут удалить любой чат."""
+    """Удаление чата. Admin может удалить любой чат."""
     try:
         chat_service = ChatService(db)
 
-        if current_user.role in (UserRole.MODERATOR, UserRole.ADMIN):
+        if current_user.role == UserRole.ADMIN:
             chat = chat_service.get_chat_session_by_id(chat_id)
         else:
             chat = chat_service.get_chat_session(chat_id, current_user.id)
@@ -337,7 +336,6 @@ async def delete_chat(
             ChatMessage.chat_session_id == chat_id
         ).count()
 
-        # Передаём owner_id чата — это нужно для корректного поиска в БД
         await chat_service.delete_chat_session(chat_id, chat.user_id)
 
         return DeleteChatResponse(
@@ -409,6 +407,26 @@ async def toggle_user_active(
     db.commit()
     db.refresh(user)
     return UserResponse.from_orm(user)
+
+
+@app.delete("/api/admin/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: int,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Удаление пользователя. Только admin. Нельзя удалить самого себя."""
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Нельзя удалить самого себя")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    db.delete(user)
+    db.commit()
+    logger.info(f"Admin {current_user.username} удалил пользователя {user.username}")
+    return None
 
 
 # ==================== LONG POLLING ====================

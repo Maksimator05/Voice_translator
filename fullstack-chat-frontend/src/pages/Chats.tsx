@@ -30,6 +30,7 @@ import {
   InputLabel,
   Chip,
   Tooltip,
+  LinearProgress,
 } from '@mui/material';
 import {
   Send,
@@ -45,23 +46,21 @@ import {
   Logout,
   AdminPanelSettings,
   Lock,
+  HourglassEmpty,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '../hooks/useRedux';
 import { logout } from '../store/authSlice';
 import { fetchChats, createChat, askAI, fetchChat, deleteChat } from '../store/chatSlice';
 import { longPollingService } from '../api/longpolling';
-import { useRBAC } from '../hooks/useRBAC';
+import { useRBAC, GUEST_TRANSCRIPTION_LIMIT } from '../hooks/useRBAC';
 import type { Chat, Message } from '../types';
 
-// Ключ для localStorage кэша сообщений
 const MESSAGES_CACHE_KEY = 'chat_messages_cache';
 
-// Цвета для отображения роли в шапке
-const ROLE_CHIP_COLOR: Record<string, 'default' | 'primary' | 'warning' | 'error'> = {
+const ROLE_CHIP_COLOR: Record<string, 'default' | 'primary' | 'error'> = {
   guest: 'default',
   user: 'primary',
-  moderator: 'warning',
   admin: 'error',
 };
 
@@ -71,7 +70,19 @@ const ChatsPage: React.FC = () => {
   const { user, token } = useAppSelector((state) => state.auth);
   const { chats: storeChats, isLoading, isSending } = useAppSelector((state) => state.chat);
 
-  const { canCreateChat, canDeleteOwnChat, canDeleteAnyChat, canSendMessages, isAdmin, role } = useRBAC();
+  const {
+    canCreateChat,
+    canDeleteOwnChat,
+    canDeleteAnyChat,
+    canSendMessages,
+    isAdmin,
+    isGuest,
+    role,
+    guestLimitReached,
+    guestUsageCount,
+    guestUsageLeft,
+    incrementGuestUsage,
+  } = useRBAC();
 
   const [chats, setChats] = useState<Chat[]>([]);
   const [selectedChat, setSelectedChat] = useState<Chat | null>(null);
@@ -95,7 +106,6 @@ const ChatsPage: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadingChatIdRef = useRef<number | null>(null);
 
-  // Проверка авторизации и загрузка чатов
   useEffect(() => {
     if (!token) {
       navigate('/auth');
@@ -104,7 +114,6 @@ const ChatsPage: React.FC = () => {
     loadChats();
   }, [token, navigate]);
 
-  // Обновление локального списка чатов из store
   useEffect(() => {
     if (storeChats.length > 0) {
       const typedChats = storeChats.map((chat) => ({
@@ -123,7 +132,6 @@ const ChatsPage: React.FC = () => {
     }
   }, [storeChats]);
 
-  // Подключение к long polling событиям
   useEffect(() => {
     if (!user) return;
 
@@ -169,21 +177,12 @@ const ChatsPage: React.FC = () => {
       );
     };
 
-    const handlePollingError = (error: any) => {
-      console.error('Polling error:', error);
-      setError('Connection error. Reconnecting...');
-    };
-
     longPollingService.on('new_message', handleNewMessage);
-    longPollingService.on('error', handlePollingError);
-
     return () => {
       longPollingService.off('new_message', handleNewMessage);
-      longPollingService.off('error', handlePollingError);
     };
   }, [user, selectedChat]);
 
-  // Прокрутка к последнему сообщению
   useEffect(() => {
     if (messages.length > 0) scrollToBottom();
   }, [messages]);
@@ -200,7 +199,7 @@ const ChatsPage: React.FC = () => {
       cache[chatId] = msgs;
       localStorage.setItem(MESSAGES_CACHE_KEY, JSON.stringify(cache));
     } catch {
-      // игнорируем ошибки кэша
+      // игнорируем
     }
   };
 
@@ -250,10 +249,13 @@ const ChatsPage: React.FC = () => {
 
   const handleSendMessage = async () => {
     if (!canSendMessages) {
-      setError('У вас нет прав для отправки сообщений');
+      setError('Вы исчерпали лимит расшифровок. Зарегистрируйтесь для безлимитного доступа.');
       return;
     }
     if (!newMessage.trim() || !selectedChat || !user) return;
+
+    // Увеличиваем счётчик для гостя
+    if (isGuest) incrementGuestUsage();
 
     const optimisticMessage: Message = {
       id: `temp_${Date.now()}`,
@@ -289,10 +291,13 @@ const ChatsPage: React.FC = () => {
 
   const handleSendAudio = async (audioFile: File) => {
     if (!canSendMessages) {
-      setError('У вас нет прав для отправки аудио');
+      setError('Вы исчерпали лимит расшифровок. Зарегистрируйтесь для безлимитного доступа.');
       return;
     }
     if (!selectedChat || !user || !audioFile) return;
+
+    // Увеличиваем счётчик для гостя
+    if (isGuest) incrementGuestUsage();
 
     setUploadingAudio(true);
 
@@ -371,7 +376,6 @@ const ChatsPage: React.FC = () => {
     setDeleting(true);
     try {
       await dispatch(deleteChat(chatToDelete.id)).unwrap();
-
       const cache = JSON.parse(localStorage.getItem(MESSAGES_CACHE_KEY) || '{}');
       delete cache[chatToDelete.id];
       localStorage.setItem(MESSAGES_CACHE_KEY, JSON.stringify(cache));
@@ -386,7 +390,6 @@ const ChatsPage: React.FC = () => {
           localStorage.removeItem('selected_chat_id');
         }
       }
-
       setDeleteDialogOpen(false);
       setChatToDelete(null);
     } catch (error: any) {
@@ -408,7 +411,6 @@ const ChatsPage: React.FC = () => {
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-
     if (!file.type.startsWith('audio/')) {
       setError('Please select an audio file (MP3, WAV, M4A, etc.)');
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -530,13 +532,44 @@ const ChatsPage: React.FC = () => {
           </Typography>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            {/* Счётчик лимита для гостя */}
+            {isGuest && (
+              <Box sx={{
+                px: 2, py: 0.5,
+                backgroundColor: guestLimitReached ? 'rgba(239, 68, 68, 0.1)' : 'rgba(124, 58, 237, 0.1)',
+                border: `1px solid ${guestLimitReached ? 'rgba(239, 68, 68, 0.3)' : 'rgba(124, 58, 237, 0.3)'}`,
+                borderRadius: 2,
+                minWidth: 160,
+              }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+                  <HourglassEmpty sx={{ fontSize: 14, color: guestLimitReached ? '#EF4444' : '#A78BFA' }} />
+                  <Typography variant="caption" sx={{ color: guestLimitReached ? '#EF4444' : '#A78BFA' }}>
+                    {guestLimitReached
+                      ? 'Лимит исчерпан'
+                      : `Осталось расшифровок: ${guestUsageLeft}`}
+                  </Typography>
+                </Box>
+                <LinearProgress
+                  variant="determinate"
+                  value={(guestUsageCount / GUEST_TRANSCRIPTION_LIMIT) * 100}
+                  sx={{
+                    height: 4, borderRadius: 2,
+                    backgroundColor: 'rgba(255,255,255,0.1)',
+                    '& .MuiLinearProgress-bar': {
+                      backgroundColor: guestLimitReached ? '#EF4444' : '#7C3AED',
+                    }
+                  }}
+                />
+              </Box>
+            )}
+
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Avatar sx={{ width: 32, height: 32, background: 'linear-gradient(135deg, #7C3AED 0%, #EC4899 100%)', fontWeight: 'bold' }}>
-                {user?.username?.charAt(0).toUpperCase() || 'U'}
+                {user?.username?.charAt(0).toUpperCase() || 'G'}
               </Avatar>
               <Box>
                 <Typography variant="body2" sx={{ color: '#f1f5f9' }}>
-                  {user?.username || 'User'}
+                  {user?.username || 'Гость'}
                 </Typography>
                 <Chip
                   label={role}
@@ -578,6 +611,21 @@ const ChatsPage: React.FC = () => {
             </Button>
           </Box>
         </Box>
+
+        {/* Баннер для гостя при исчерпанном лимите */}
+        {isGuest && guestLimitReached && (
+          <Alert
+            severity="warning"
+            sx={{ mb: 2, backgroundColor: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)' }}
+            action={
+              <Button color="inherit" size="small" onClick={() => navigate('/auth')}>
+                Зарегистрироваться
+              </Button>
+            }
+          >
+            Вы использовали все {GUEST_TRANSCRIPTION_LIMIT} бесплатные расшифровки. Зарегистрируйтесь для безлимитного доступа.
+          </Alert>
+        )}
 
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>{error}</Alert>
@@ -631,7 +679,7 @@ const ChatsPage: React.FC = () => {
                     New Chat
                   </Button>
                 ) : (
-                  <Tooltip title="Для создания чатов необходима роль user или выше">
+                  <Tooltip title="Для создания чатов необходима регистрация">
                     <span>
                       <Button
                         fullWidth
@@ -652,54 +700,54 @@ const ChatsPage: React.FC = () => {
                   {filteredChats.map((chat) => (
                     <React.Fragment key={`chat_${chat.id}`}>
                       <ListItem disablePadding sx={{ mb: 0.5 }}>
-                      <ListItemButton
-                        selected={selectedChat?.id === chat.id}
-                        onClick={() => handleSelectChat(chat)}
-                        sx={{
-                          borderRadius: 1,
-                          '&.Mui-selected': {
-                            backgroundColor: 'rgba(124, 58, 237, 0.1)',
-                            '&:hover': { backgroundColor: 'rgba(124, 58, 237, 0.2)' },
-                          },
-                          '&:hover': { backgroundColor: 'rgba(124, 58, 237, 0.05)' },
-                        }}
-                      >
-                        <ListItemAvatar>
-                          <Avatar sx={{ bgcolor: getChatTypeColor(chat.session_type) }}>
-                            {getChatTypeIcon(chat.session_type)}
-                          </Avatar>
-                        </ListItemAvatar>
-                        <ListItemText
-                          primary={
-                            <Box display="flex" justifyContent="space-between" alignItems="flex-start">
-                              <Typography variant="subtitle2" noWrap sx={{ flex: 1, color: '#f1f5f9', pr: 1 }}>
-                                {chat.title}
+                        <ListItemButton
+                          selected={selectedChat?.id === chat.id}
+                          onClick={() => handleSelectChat(chat)}
+                          sx={{
+                            borderRadius: 1,
+                            '&.Mui-selected': {
+                              backgroundColor: 'rgba(124, 58, 237, 0.1)',
+                              '&:hover': { backgroundColor: 'rgba(124, 58, 237, 0.2)' },
+                            },
+                            '&:hover': { backgroundColor: 'rgba(124, 58, 237, 0.05)' },
+                          }}
+                        >
+                          <ListItemAvatar>
+                            <Avatar sx={{ bgcolor: getChatTypeColor(chat.session_type) }}>
+                              {getChatTypeIcon(chat.session_type)}
+                            </Avatar>
+                          </ListItemAvatar>
+                          <ListItemText
+                            primary={
+                              <Box display="flex" justifyContent="space-between" alignItems="flex-start">
+                                <Typography variant="subtitle2" noWrap sx={{ flex: 1, color: '#f1f5f9', pr: 1 }}>
+                                  {chat.title}
+                                </Typography>
+                                <Typography variant="caption" sx={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                                  {formatDate(chat.updated_at)}
+                                </Typography>
+                              </Box>
+                            }
+                            secondary={
+                              <Typography variant="body2" sx={{ color: '#94a3b8', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                                {chat.last_message || 'No messages yet'}
+                                {(chat.message_count || 0) > 0 && (
+                                  <span> • {chat.message_count} {chat.message_count === 1 ? 'msg' : 'msgs'}</span>
+                                )}
                               </Typography>
-                              <Typography variant="caption" sx={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>
-                                {formatDate(chat.updated_at)}
-                              </Typography>
-                            </Box>
-                          }
-                          secondary={
-                            <Typography variant="body2" sx={{ color: '#94a3b8', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                              {chat.last_message || 'No messages yet'}
-                              {(chat.message_count || 0) > 0 && (
-                                <span> • {chat.message_count} {chat.message_count === 1 ? 'msg' : 'msgs'}</span>
-                              )}
-                            </Typography>
-                          }
-                        />
-                        <ListItemSecondaryAction>
-                          <IconButton
-                            edge="end"
-                            size="small"
-                            onClick={(e) => handleOpenMenu(e, chat)}
-                            sx={{ color: '#94a3b8' }}
-                          >
-                            <MoreVert fontSize="small" />
-                          </IconButton>
-                        </ListItemSecondaryAction>
-                      </ListItemButton>
+                            }
+                          />
+                          <ListItemSecondaryAction>
+                            <IconButton
+                              edge="end"
+                              size="small"
+                              onClick={(e) => handleOpenMenu(e, chat)}
+                              sx={{ color: '#94a3b8' }}
+                            >
+                              <MoreVert fontSize="small" />
+                            </IconButton>
+                          </ListItemSecondaryAction>
+                        </ListItemButton>
                       </ListItem>
                       <Divider component="li" sx={{ borderColor: '#334155', opacity: 0.5, mx: 2 }} />
                     </React.Fragment>
@@ -766,18 +814,21 @@ const ChatsPage: React.FC = () => {
                         <Typography variant="h6" sx={{ color: '#f1f5f9', mb: 2 }}>No messages yet</Typography>
                         <Typography variant="body2" sx={{ color: '#94a3b8', mb: 3, maxWidth: 400 }}>
                           {canSendMessages
-                            ? 'Start the conversation by sending a message or uploading an audio file'
-                            : 'У вас роль guest — отправка сообщений недоступна'}
+                            ? `Start the conversation${isGuest ? ` (осталось ${guestUsageLeft} из ${GUEST_TRANSCRIPTION_LIMIT})` : ''}`
+                            : `Лимит исчерпан. Зарегистрируйтесь для безлимитного доступа.`}
                         </Typography>
+                        {isGuest && guestLimitReached && (
+                          <Button variant="contained" onClick={() => navigate('/auth')}
+                            sx={{ background: 'linear-gradient(135deg, #7C3AED 0%, #A78BFA 100%)' }}>
+                            Зарегистрироваться
+                          </Button>
+                        )}
                       </Box>
                     ) : (
                       <>
                         {messages.map((message, index) => {
                           if (!message) return null;
-                          const messageKey = message.id
-                            ? `msg_${message.id}`
-                            : `msg_temp_${index}`;
-
+                          const messageKey = message.id ? `msg_${message.id}` : `msg_temp_${index}`;
                           return (
                             <Box
                               key={messageKey}
@@ -844,15 +895,26 @@ const ChatsPage: React.FC = () => {
 
                   {/* Input area */}
                   <Box p={2} borderTop="1px solid #334155">
-                    {!canSendMessages ? (
-                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, py: 1, backgroundColor: 'rgba(239, 68, 68, 0.05)', borderRadius: 1, border: '1px solid rgba(239, 68, 68, 0.2)' }}>
-                        <Lock sx={{ color: '#EF4444', fontSize: 16 }} />
-                        <Typography variant="body2" sx={{ color: '#EF4444' }}>
-                          Отправка сообщений недоступна для роли guest
-                        </Typography>
+                    {guestLimitReached ? (
+                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, py: 1.5, px: 2, backgroundColor: 'rgba(239, 68, 68, 0.05)', borderRadius: 1, border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <Lock sx={{ color: '#EF4444', fontSize: 16 }} />
+                          <Typography variant="body2" sx={{ color: '#EF4444' }}>
+                            Лимит {GUEST_TRANSCRIPTION_LIMIT} расшифровок исчерпан
+                          </Typography>
+                        </Box>
+                        <Button size="small" variant="outlined" onClick={() => navigate('/auth')}
+                          sx={{ color: '#7C3AED', borderColor: '#7C3AED', whiteSpace: 'nowrap' }}>
+                          Зарегистрироваться
+                        </Button>
                       </Box>
                     ) : (
                       <>
+                        {isGuest && (
+                          <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block', mb: 1 }}>
+                            Бесплатных расшифровок: {guestUsageLeft} из {GUEST_TRANSCRIPTION_LIMIT}
+                          </Typography>
+                        )}
                         <Grid container spacing={1} alignItems="center">
                           <Grid size="grow">
                             <TextField
@@ -942,21 +1004,16 @@ const ChatsPage: React.FC = () => {
           <DialogTitle sx={{ color: '#f1f5f9' }}>Create new chat</DialogTitle>
           <DialogContent>
             <TextField
-              autoFocus
-              margin="dense"
-              label="Chat title"
-              fullWidth
-              value={newChatTitle}
-              onChange={(e) => setNewChatTitle(e.target.value)}
+              autoFocus margin="dense" label="Chat title" fullWidth
+              value={newChatTitle} onChange={(e) => setNewChatTitle(e.target.value)}
               sx={{ mb: 3, '& .MuiOutlinedInput-root': { color: '#f1f5f9', '& fieldset': { borderColor: '#334155' }, '&.Mui-focused fieldset': { borderColor: '#7C3AED' } }, '& .MuiInputLabel-root': { color: '#94a3b8' } }}
             />
             <FormControl fullWidth>
               <InputLabel sx={{ color: '#94a3b8' }}>Chat type</InputLabel>
               <Select
-                value={newChatType}
-                label="Chat type"
+                value={newChatType} label="Chat type"
                 onChange={(e) => setNewChatType(e.target.value as 'text' | 'audio' | 'meeting')}
-                sx={{ color: '#f1f5f9', '& .MuiOutlinedInput-notchedOutline': { borderColor: '#334155' }, '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#475569' }, '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#7C3AED' } }}
+                sx={{ color: '#f1f5f9', '& .MuiOutlinedInput-notchedOutline': { borderColor: '#334155' }, '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#7C3AED' } }}
               >
                 <MenuItem value="text"><Box display="flex" alignItems="center" sx={{ color: '#f1f5f9' }}><TextSnippet sx={{ mr: 1 }} />Text chat</Box></MenuItem>
                 <MenuItem value="audio"><Box display="flex" alignItems="center" sx={{ color: '#f1f5f9' }}><AudioFile sx={{ mr: 1 }} />Audio chat</Box></MenuItem>
@@ -966,9 +1023,7 @@ const ChatsPage: React.FC = () => {
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setCreateDialogOpen(false)} sx={{ color: '#94a3b8' }}>Cancel</Button>
-            <Button onClick={handleCreateChat} variant="contained" sx={{ background: 'linear-gradient(135deg, #7C3AED 0%, #A78BFA 100%)', '&:hover': { background: 'linear-gradient(135deg, #5B21B6 0%, #7C3AED 100%)' } }}>
-              Create
-            </Button>
+            <Button onClick={handleCreateChat} variant="contained" sx={{ background: 'linear-gradient(135deg, #7C3AED 0%, #A78BFA 100%)' }}>Create</Button>
           </DialogActions>
         </Dialog>
 
@@ -977,61 +1032,42 @@ const ChatsPage: React.FC = () => {
           <DialogTitle sx={{ color: '#f1f5f9' }}>Delete Chat</DialogTitle>
           <DialogContent>
             <Typography sx={{ color: '#cbd5e1', mb: 2 }}>Are you sure you want to delete "{chatToDelete?.title}"?</Typography>
-            <Typography variant="body2" sx={{ color: '#94a3b8' }}>This action cannot be undone. All messages will be permanently deleted.</Typography>
+            <Typography variant="body2" sx={{ color: '#94a3b8' }}>This action cannot be undone.</Typography>
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setDeleteDialogOpen(false)} disabled={deleting} sx={{ color: '#94a3b8' }}>Cancel</Button>
-            <Button onClick={confirmDeleteChat} disabled={deleting} variant="contained" color="error" sx={{ backgroundColor: '#ef4444', '&:hover': { backgroundColor: '#dc2626' } }}>
+            <Button onClick={confirmDeleteChat} disabled={deleting} variant="contained" color="error">
               {deleting ? <CircularProgress size={24} sx={{ color: 'white' }} /> : 'Delete'}
             </Button>
           </DialogActions>
         </Dialog>
 
-        {/* Диалог переименования чата */}
+        {/* Диалог переименования */}
         <Dialog open={renameDialogOpen} onClose={() => setRenameDialogOpen(false)} PaperProps={{ sx: { backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: 2 } }}>
           <DialogTitle sx={{ color: '#f1f5f9' }}>Rename Chat</DialogTitle>
           <DialogContent>
             <TextField
-              autoFocus
-              margin="dense"
-              label="New title"
-              fullWidth
-              value={renameTitle}
-              onChange={(e) => setRenameTitle(e.target.value)}
+              autoFocus margin="dense" label="New title" fullWidth
+              value={renameTitle} onChange={(e) => setRenameTitle(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && handleRenameConfirm()}
               sx={{ '& .MuiOutlinedInput-root': { color: '#f1f5f9', '& fieldset': { borderColor: '#334155' }, '&.Mui-focused fieldset': { borderColor: '#7C3AED' } }, '& .MuiInputLabel-root': { color: '#94a3b8' } }}
             />
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setRenameDialogOpen(false)} sx={{ color: '#94a3b8' }}>Cancel</Button>
-            <Button onClick={handleRenameConfirm} variant="contained" sx={{ background: 'linear-gradient(135deg, #7C3AED 0%, #A78BFA 100%)' }}>
-              Rename
-            </Button>
+            <Button onClick={handleRenameConfirm} variant="contained" sx={{ background: 'linear-gradient(135deg, #7C3AED 0%, #A78BFA 100%)' }}>Rename</Button>
           </DialogActions>
         </Dialog>
 
-        {/* Контекстное меню чата */}
+        {/* Контекстное меню */}
         <Menu
-          anchorEl={anchorEl}
-          open={Boolean(anchorEl)}
-          onClose={handleCloseMenu}
+          anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={handleCloseMenu}
           PaperProps={{ sx: { backgroundColor: '#1e293b', border: '1px solid #334155', '& .MuiMenuItem-root': { color: '#f1f5f9', '&:hover': { backgroundColor: 'rgba(124, 58, 237, 0.1)' } } } }}
         >
-          <MenuItem onClick={handleRenameOpen}>
-            <Edit fontSize="small" sx={{ mr: 1 }} />
-            Rename
-          </MenuItem>
-
+          <MenuItem onClick={handleRenameOpen}><Edit fontSize="small" sx={{ mr: 1 }} />Rename</MenuItem>
           {menuChat && canDeleteChat(menuChat) && (
-            <MenuItem
-              onClick={() => {
-                if (menuChat) handleDeleteChatClick(menuChat.id);
-                handleCloseMenu();
-              }}
-              sx={{ color: '#EF4444 !important' }}
-            >
-              <Delete fontSize="small" sx={{ mr: 1 }} />
-              Delete
+            <MenuItem onClick={() => { if (menuChat) handleDeleteChatClick(menuChat.id); handleCloseMenu(); }} sx={{ color: '#EF4444 !important' }}>
+              <Delete fontSize="small" sx={{ mr: 1 }} />Delete
             </MenuItem>
           )}
         </Menu>

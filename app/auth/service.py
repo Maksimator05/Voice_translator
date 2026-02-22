@@ -14,6 +14,9 @@ from app.database.connection import get_db
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 security = HTTPBearer()
 
+# Лимит бесплатных расшифровок для гостя (проверяется на бэкенде)
+GUEST_TRANSCRIPTION_LIMIT = 3
+
 
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
@@ -93,9 +96,6 @@ def require_role(*allowed_roles: UserRole):
     """
     Фабрика зависимостей: проверяет, что у текущего пользователя
     есть одна из допустимых ролей. При нарушении возвращает 403.
-
-    Пример использования:
-        @app.delete("/admin/chats/{id}", dependencies=[Depends(require_role(UserRole.ADMIN, UserRole.MODERATOR))])
     """
     async def dependency(current_user: User = Depends(get_current_active_user)) -> User:
         if current_user.role not in allowed_roles:
@@ -107,7 +107,6 @@ def require_role(*allowed_roles: UserRole):
     return dependency
 
 
-# Готовые зависимости для удобного использования
+# Готовые зависимости
 require_admin = require_role(UserRole.ADMIN)
-require_moderator_or_admin = require_role(UserRole.MODERATOR, UserRole.ADMIN)
-require_user_or_above = require_role(UserRole.USER, UserRole.MODERATOR, UserRole.ADMIN)
+require_user_or_above = require_role(UserRole.USER, UserRole.ADMIN)

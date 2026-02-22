@@ -6,10 +6,9 @@ import enum
 
 class UserRole(str, enum.Enum):
     """Роли пользователей в системе"""
-    GUEST = "guest"       # Только чтение, без создания чатов
-    USER = "user"         # Обычный пользователь — создаёт/удаляет свои чаты
-    MODERATOR = "moderator"  # Может просматривать все чаты, удалять любые
-    ADMIN = "admin"       # Полный доступ + управление ролями
+    GUEST = "guest"   # Гость — только 3 бесплатные расшифровки, без создания чатов
+    USER = "user"     # Авторизованный — неограниченное количество расшифровок
+    ADMIN = "admin"   # Администратор — полный доступ + управление пользователями
 
 
 class User(Base):
@@ -20,6 +19,5 @@ class User(Base):
     username = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
-    # Новое поле: роль пользователя (по умолчанию — user)
     role = Column(Enum(UserRole), default=UserRole.USER, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)

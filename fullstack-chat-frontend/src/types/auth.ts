@@ -1,6 +1,6 @@
 // src/types/auth.ts
 
-export type UserRole = 'guest' | 'user' | 'moderator' | 'admin';
+export type UserRole = 'guest' | 'user' | 'admin';
 
 export interface User {
   id: number;
@@ -8,7 +8,7 @@ export interface User {
   username: string;
   created_at: string;
   is_active: boolean;
-  role: UserRole;        // Роль пользователя
+  role: UserRole;
 }
 
 export interface AuthState {

@@ -24,4 +24,9 @@ export const adminApi = {
     );
     return data;
   },
+
+  /** Удалить пользователя (только admin) */
+  deleteUser: async (userId: number): Promise<void> => {
+    await api.delete(`/admin/users/${userId}`);
+  },
 };
