@@ -22,7 +22,7 @@ import {
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '../hooks/useRedux';
-import { login, register, clearError } from '../store/authSlice';
+import { login, register, clearError, guestLogin } from '../store/authSlice';
 import { darkTheme } from '../theme';
 
 const AuthPage: React.FC = () => {
@@ -45,13 +45,8 @@ const AuthPage: React.FC = () => {
   });
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value,
-    });
-    if (error) {
-      dispatch(clearError());
-    }
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+    if (error) dispatch(clearError());
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -59,17 +54,12 @@ const AuthPage: React.FC = () => {
 
     if (!isLogin && formData.password !== formData.confirmPassword) {
       dispatch(clearError());
-      // Можно добавить обработку ошибки несовпадения паролей
       return;
     }
 
     if (isLogin) {
-      await dispatch(login({
-        email: formData.email,
-        password: formData.password,
-      }));
+      await dispatch(login({ email: formData.email, password: formData.password }));
     } else {
-      // При регистрации отправляем только необходимые поля
       await dispatch(register({
         email: formData.email,
         username: formData.username,
@@ -78,54 +68,34 @@ const AuthPage: React.FC = () => {
     }
   };
 
-  // Обработка успешной регистрации
+  const handleGuestLogin = async () => {
+    await dispatch(guestLogin() as any);
+  };
+
+  // Успешная регистрация — переключаемся на логин
   useEffect(() => {
     if (user && token && !isLogin) {
-      // Показываем сообщение об успешной регистрации
       setSuccessMessage('Registration successful! Please sign in.');
       setShowSuccessSnackbar(true);
-
-      // Переключаемся на форму логина
       setIsLogin(true);
-
-      // Очищаем форму
-      setFormData({
-        email: '',
-        username: '',
-        password: '',
-        confirmPassword: '',
-        full_name: '',
-      });
-
-      // Можно также очистить состояние пользователя чтобы не перенаправлять в чат
+      setFormData({ email: '', username: '', password: '', confirmPassword: '', full_name: '' });
       localStorage.removeItem('access_token');
       localStorage.removeItem('user');
     }
   }, [user, token, isLogin]);
 
-  // Обработка успешной авторизации - переход в чат
+  // Успешный вход (обычный или гостевой) — редирект в чаты
   useEffect(() => {
-    if (user && token && isLogin) {
-      // Перенаправляем в чат
-      navigate('/chat', { replace: true });
+    if (user && token && (isLogin || user.role === 'guest')) {
+      navigate('/chats', { replace: true });
     }
   }, [user, token, isLogin, navigate]);
 
-  // Очищаем ошибку при переключении режима
+  // Сброс ошибки при переключении режима
   useEffect(() => {
     dispatch(clearError());
-    setFormData({
-      email: '',
-      username: '',
-      password: '',
-      confirmPassword: '',
-      full_name: '',
-    });
+    setFormData({ email: '', username: '', password: '', confirmPassword: '', full_name: '' });
   }, [isLogin, dispatch]);
-
-  const handleCloseSnackbar = () => {
-    setShowSuccessSnackbar(false);
-  };
 
   return (
     <ThemeProvider theme={darkTheme}>
@@ -164,6 +134,7 @@ const AuthPage: React.FC = () => {
             </Alert>
           )}
 
+          {/* Переключатель Sign In / Sign Up — без Guest */}
           <Box display="flex" justifyContent="center" mb={3}>
             <Button
               variant={isLogin ? 'contained' : 'outlined'}
@@ -289,23 +260,67 @@ const AuthPage: React.FC = () => {
               />
             )}
 
-            <Button
-              fullWidth
-              variant="contained"
-              type="submit"
-              disabled={isLoading}
-              sx={{
-                mt: 3,
-                py: 1.5,
-                borderRadius: 2,
-                background: 'linear-gradient(135deg, #7C3AED 0%, #A78BFA 100%)',
-                '&:hover': {
-                  background: 'linear-gradient(135deg, #5B21B6 0%, #7C3AED 100%)',
-                },
-              }}
-            >
-              {isLoading ? 'Loading...' : isLogin ? 'Sign In' : 'Sign Up'}
-            </Button>
+            {/* Кнопки внизу формы */}
+            {isLogin ? (
+              // Режим входа: Sign In + Guest рядом
+              <Box display="flex" gap={1} mt={3}>
+                <Button
+                  fullWidth
+                  variant="contained"
+                  type="submit"
+                  disabled={isLoading}
+                  sx={{
+                    py: 1.5,
+                    borderRadius: 2,
+                    background: 'linear-gradient(135deg, #7C3AED 0%, #A78BFA 100%)',
+                    '&:hover': {
+                      background: 'linear-gradient(135deg, #5B21B6 0%, #7C3AED 100%)',
+                    },
+                  }}
+                >
+                  {isLoading ? 'Loading...' : 'Sign In'}
+                </Button>
+                <Button
+                  fullWidth
+                  variant="outlined"
+                  type="button"
+                  disabled={isLoading}
+                  onClick={handleGuestLogin}
+                  sx={{
+                    py: 1.5,
+                    borderRadius: 2,
+                    color: '#94a3b8',
+                    borderColor: '#475569',
+                    '&:hover': {
+                      borderColor: '#7C3AED',
+                      color: '#A78BFA',
+                      backgroundColor: 'rgba(124, 58, 237, 0.08)',
+                    },
+                  }}
+                >
+                  {isLoading ? '...' : 'Guest'}
+                </Button>
+              </Box>
+            ) : (
+              // Режим регистрации: одна кнопка Sign Up
+              <Button
+                fullWidth
+                variant="contained"
+                type="submit"
+                disabled={isLoading}
+                sx={{
+                  mt: 3,
+                  py: 1.5,
+                  borderRadius: 2,
+                  background: 'linear-gradient(135deg, #7C3AED 0%, #A78BFA 100%)',
+                  '&:hover': {
+                    background: 'linear-gradient(135deg, #5B21B6 0%, #7C3AED 100%)',
+                  },
+                }}
+              >
+                {isLoading ? 'Loading...' : 'Sign Up'}
+              </Button>
+            )}
           </form>
 
           <Box mt={3} textAlign="center">
@@ -313,13 +328,7 @@ const AuthPage: React.FC = () => {
               component="button"
               onClick={() => {
                 setIsLogin(!isLogin);
-                setFormData({
-                  email: '',
-                  username: '',
-                  password: '',
-                  confirmPassword: '',
-                  full_name: '',
-                });
+                setFormData({ email: '', username: '', password: '', confirmPassword: '', full_name: '' });
               }}
               sx={{
                 color: 'primary.light',
@@ -337,13 +346,13 @@ const AuthPage: React.FC = () => {
           {isLogin && (
             <Box mt={4} p={2} bgcolor="grey.900" borderRadius={2}>
               <Typography variant="body2" color="text.secondary" mb={1}>
-                Demo credentials:
+                Admin credentials:
               </Typography>
               <Typography variant="body2" color="text.primary">
-                Email: demo@example.com
+                Email: max@example.com
               </Typography>
               <Typography variant="body2" color="text.primary">
-                Password: demo123
+                Password: 1234
               </Typography>
             </Box>
           )}
@@ -355,18 +364,13 @@ const AuthPage: React.FC = () => {
           </Box>
         </Paper>
 
-        {/* Snackbar для успешной регистрации */}
         <Snackbar
           open={showSuccessSnackbar}
           autoHideDuration={6000}
-          onClose={handleCloseSnackbar}
+          onClose={() => setShowSuccessSnackbar(false)}
           anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
         >
-          <Alert
-            onClose={handleCloseSnackbar}
-            severity="success"
-            sx={{ width: '100%' }}
-          >
+          <Alert onClose={() => setShowSuccessSnackbar(false)} severity="success" sx={{ width: '100%' }}>
             {successMessage}
           </Alert>
         </Snackbar>

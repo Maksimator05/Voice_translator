@@ -62,6 +62,20 @@ export const login = createAsyncThunk(
   }
 );
 
+export const guestLogin = createAsyncThunk(
+  'auth/guestLogin',
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await authApi.guestLogin();
+      localStorage.setItem('access_token', response.access_token);
+      localStorage.setItem('user', JSON.stringify(response.user));
+      return response;
+    } catch (error: any) {
+      return rejectWithValue(error.response?.data?.detail || 'Guest login failed');
+    }
+  }
+);
+
 export const logout = createAsyncThunk(
   'auth/logout',
   async (_, { rejectWithValue }) => {
@@ -145,6 +159,20 @@ const authSlice = createSlice({
         state.isLoading = false;
         state.error = action.payload as string;
       })
+      // Guest Login
+      .addCase(guestLogin.pending, (state) => {
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(guestLogin.fulfilled, (state, action: PayloadAction<TokenResponse>) => {
+        state.isLoading = false;
+        state.user = action.payload.user;
+        state.token = action.payload.access_token;
+      })
+      .addCase(guestLogin.rejected, (state, action) => {
+        state.isLoading = false;
+        state.error = action.payload as string;
+      })
       // Logout
       .addCase(logout.fulfilled, (state) => {
         state.user = null;
@@ -164,6 +192,7 @@ const authSlice = createSlice({
       });
   },
 });
+
 
 export const { clearError, clearUser, restoreAuth } = authSlice.actions;
 export default authSlice.reducer;

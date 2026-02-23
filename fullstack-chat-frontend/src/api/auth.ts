@@ -27,6 +27,16 @@ export const authApi = {
     return response.data;
   },
 
+  // Вход как гость — без регистрации, лимит 3 расшифровки
+  guestLogin: async () => {
+    const response = await api.post<{
+      access_token: string;
+      token_type: string;
+      user: User;
+    }>('/auth/guest-login', {});
+    return response.data;
+  },
+
   logout: async () => {
     localStorage.removeItem('access_token');
     localStorage.removeItem('user');

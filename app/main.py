@@ -53,7 +53,7 @@ long_polling_connections: Dict[int, List[asyncio.Queue]] = {}
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
     allow_methods=["*"],
     allow_credentials=True,
     allow_headers=["*"],
@@ -70,6 +70,28 @@ async def startup_event():
         logger.info("✅ База данных инициализирована")
     except Exception as e:
         logger.error(f"❌ Не удалось инициализировать БД: {e}")
+
+    # ── Создаём аккаунт администратора при первом запуске ──────────────────
+    try:
+        db = next(get_db())
+        admin_email = "max@example.com"
+        if not db.query(User).filter(User.email == admin_email).first():
+            admin_user = User(
+                email=admin_email,
+                username="max",
+                hashed_password=get_password_hash("1234"),
+                role=UserRole.ADMIN,
+                is_active=True,
+            )
+            db.add(admin_user)
+            db.commit()
+            logger.info("✅ Администратор max@example.com создан (пароль: 1234)")
+        else:
+            logger.info("ℹ️  Администратор max@example.com уже существует")
+        db.close()
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания администратора: {e}")
+    # ───────────────────────────────────────────────────────────────────────
 
     try:
         await llm_processor.initialize_model()
@@ -126,6 +148,45 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
 @app.get("/api/auth/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_active_user)):
     return UserResponse.from_orm(current_user)
+
+
+@app.post("/api/auth/guest-login", response_model=Token)
+async def guest_login(db: Session = Depends(get_db)):
+    """
+    Вход как гость — без регистрации.
+    Создаёт временного пользователя с ролью GUEST.
+    Гость может сделать не более 3 расшифровок аудио (счётчик в localStorage фронтенда).
+    """
+    import uuid
+    guest_id = str(uuid.uuid4())[:8]
+    guest_email = f"guest_{guest_id}@example.com"
+    guest_username = f"guest_{guest_id}"
+
+    guest_user = User(
+        email=guest_email,
+        username=guest_username,
+        hashed_password=get_password_hash(guest_id),
+        role=UserRole.GUEST,
+        is_active=True,
+    )
+    db.add(guest_user)
+    db.commit()
+    db.refresh(guest_user)
+
+    # Автоматически создаём чат для гостя чтобы он мог делать расшифровки
+    try:
+        chat_service = ChatService(db)
+        chat_data = ChatSessionCreate(title="Guest Chat", session_type="audio")
+        chat_service.create_chat_session(guest_user.id, chat_data)
+    except Exception as e:
+        logger.warning(f"Не удалось создать чат для гостя: {e}")
+
+    access_token = create_access_token(data={"sub": guest_user.username})
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user=UserResponse.from_orm(guest_user),
+    )
 
 
 # ==================== ЭНДПОИНТЫ ЧАТОВ ====================
