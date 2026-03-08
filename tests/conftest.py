@@ -27,6 +27,10 @@ def override_get_db():
 @pytest.fixture(scope="function", autouse=False)
 def client():
     """Тестовый HTTP-клиент с изолированной БД."""
+    # Импортируем модели, чтобы они зарегистрировались в Base.metadata
+    from app.auth.models import User  # noqa: F401
+    from app.models.chat_models import ChatSession, ChatMessage  # noqa: F401
+    from app.models.meeting_models import AnalysisResult  # noqa: F401
     Base.metadata.create_all(bind=engine)
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
