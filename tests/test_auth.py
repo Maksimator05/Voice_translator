@@ -2,7 +2,6 @@
 Тесты аутентификации и авторизации (Лаб 2).
 Покрывают: регистрацию, вход, refresh, logout, RBAC.
 """
-import pytest
 from fastapi.testclient import TestClient
 
 
