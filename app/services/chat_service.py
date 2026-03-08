@@ -58,7 +58,7 @@ class ChatService:
         try:
             chat_sessions = (
                 self.db.query(ChatSession)
-                .filter(ChatSession.user_id == user_id, ChatSession.is_active == True)
+                .filter(ChatSession.user_id == user_id, ChatSession.is_active.is_(True))
                 .order_by(desc(ChatSession.updated_at))
                 .all()
             )
@@ -72,7 +72,7 @@ class ChatService:
         try:
             chat_sessions = (
                 self.db.query(ChatSession)
-                .filter(ChatSession.is_active == True)
+                .filter(ChatSession.is_active.is_(True))
                 .order_by(desc(ChatSession.updated_at))
                 .all()
             )

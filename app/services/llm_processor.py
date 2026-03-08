@@ -156,9 +156,9 @@ class LLMProcessor:
             logger.error(f"❌ Ошибка транскрипции файла {audio_path}: {str(e)}")
             # Детальная диагностика
             if os.path.exists(audio_path):
-                logger.info(f"📁 Файл существует, но ошибка транскрипции")
+                logger.info("📁 Файл существует, но ошибка транскрипции")
             else:
-                logger.info(f"📁 Файл не существует после проверки")
+                logger.info("📁 Файл не существует после проверки")
             return {
                 "success": False,
                 "text": f"Ошибка транскрипции: {str(e)}",
@@ -339,7 +339,7 @@ class LLMProcessor:
             if response.status_code == 200:
                 return True
             return False
-        except:
+        except Exception:
             return False
 
     async def _load_available_models(self):
@@ -535,7 +535,7 @@ class LLMProcessor:
                 json_str = content
 
             return json.loads(json_str)
-        except:
+        except Exception:
             return self._create_fallback_analysis()
 
     def _create_fallback_analysis(self) -> Dict[str, Any]:

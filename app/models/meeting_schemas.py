@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from enum import Enum
 
 class SpeakerRole(str, Enum):

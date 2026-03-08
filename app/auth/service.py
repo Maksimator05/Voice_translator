@@ -112,7 +112,7 @@ def revoke_all_user_refresh_tokens(db: Session, user_id: int) -> int:
     """Отзывает все активные refresh токены пользователя (принудительный выход)."""
     count = db.query(RefreshToken).filter(
         RefreshToken.user_id == user_id,
-        RefreshToken.is_revoked == False,
+        RefreshToken.is_revoked.is_(False),
     ).update({"is_revoked": True})
     db.commit()
     return count

@@ -26,7 +26,7 @@ def get_db():
 def create_tables():
     """Создает таблицы в БД"""
     # 👇 импортируем модели только тут
-    from app.auth import models
+    from app.auth import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 

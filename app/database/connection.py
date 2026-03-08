@@ -40,10 +40,10 @@ def create_tables():
         print("✅ Таблица users создана")
 
         # 3. Затем импортируем и создаем остальные таблицы
-        from app.models.chat_models import ChatSession, ChatMessage
+        from app.models.chat_models import ChatSession, ChatMessage  # noqa: F401
         print("✅ Модели ChatSession и ChatMessage импортированы")
 
-        from app.models.meeting_models import AnalysisResult
+        from app.models.meeting_models import AnalysisResult  # noqa: F401
         print("✅ Модель AnalysisResult импортирована")
 
         # 4. Создаем остальные таблицы

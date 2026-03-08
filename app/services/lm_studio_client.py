@@ -30,7 +30,7 @@ class LMStudioClient:
         try:
             response = requests.get(f"{self.base_url}/models", timeout=5)
             return response.status_code == 200
-        except:
+        except Exception:
             return False
 
     def transcribe_audio(self, audio_path: str) -> str:
@@ -143,7 +143,7 @@ class LMStudioClient:
             result = json.loads(json_str)
             return result.get('segments', [])
 
-        except:
+        except Exception:
             # Если парсинг не удался, используем fallback
             return self._fallback_diarization(audio_duration)
 
