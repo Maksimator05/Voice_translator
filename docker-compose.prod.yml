@@ -1,0 +1,60 @@
+# ====================================================
+# docker-compose.prod.yml — запуск из Docker Hub образов
+# Запуск: docker compose -f docker-compose.prod.yml up -d
+# Остановка: docker compose -f docker-compose.prod.yml down
+# ====================================================
+
+services:
+
+  # ── Backend (FastAPI) ────────────────────────────────────────────────────
+  backend:
+    image: maksimator/voice_translator:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_data:/app/data
+      - backend_uploads:/app/uploads
+    environment:
+      DATABASE_URL: sqlite:////app/data/meeting_analyzer.db
+      LM_STUDIO_URL: http://host.docker.internal:1234
+      LM_STUDIO_MODEL: ${LM_STUDIO_MODEL:-local-model}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in .env}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ── Frontend (React → nginx) ─────────────────────────────────────────────
+  frontend:
+    image: maksimator/voice_translator:frontend-latest
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  backend_data:
+  backend_uploads:
