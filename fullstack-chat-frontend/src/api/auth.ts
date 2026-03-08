@@ -1,13 +1,9 @@
 import { api } from '.';
-import { LoginCredentials, RegisterCredentials, User } from '../types';
+import { LoginCredentials, RegisterCredentials, TokenResponse, User } from '../types';
 
 export const authApi = {
-  register: async (credentials: RegisterCredentials) => {
-    const response = await api.post<{
-      access_token: string;
-      token_type: string;
-      user: User;
-    }>('/auth/register', {
+  register: async (credentials: RegisterCredentials): Promise<TokenResponse> => {
+    const response = await api.post<TokenResponse>('/auth/register', {
       email: credentials.email,
       username: credentials.username,
       password: credentials.password
@@ -15,12 +11,8 @@ export const authApi = {
     return response.data;
   },
 
-  login: async (credentials: LoginCredentials) => {
-    const response = await api.post<{
-      access_token: string;
-      token_type: string;
-      user: User;
-    }>('/auth/login', {
+  login: async (credentials: LoginCredentials): Promise<TokenResponse> => {
+    const response = await api.post<TokenResponse>('/auth/login', {
       email: credentials.email,
       password: credentials.password
     });
@@ -28,21 +20,29 @@ export const authApi = {
   },
 
   // Вход как гость — без регистрации, лимит 3 расшифровки
-  guestLogin: async () => {
-    const response = await api.post<{
-      access_token: string;
-      token_type: string;
-      user: User;
-    }>('/auth/guest-login', {});
+  guestLogin: async (): Promise<TokenResponse> => {
+    const response = await api.post<TokenResponse>('/auth/guest-login', {});
     return response.data;
   },
 
-  logout: async () => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('user');
+  // Обновление access token через refresh token (ротация токенов)
+  refresh: async (refreshToken: string): Promise<TokenResponse> => {
+    const response = await api.post<TokenResponse>('/auth/refresh', {
+      refresh_token: refreshToken,
+    });
+    return response.data;
   },
 
-  getCurrentUser: async () => {
+  // Серверный logout: отзывает refresh token в БД
+  logout: async (refreshToken: string): Promise<void> => {
+    try {
+      await api.post('/auth/logout', { refresh_token: refreshToken });
+    } catch {
+      // Игнорируем ошибку — локальная очистка всё равно произойдёт
+    }
+  },
+
+  getCurrentUser: async (): Promise<User> => {
     const response = await api.get<User>('/auth/me');
     return response.data;
   },

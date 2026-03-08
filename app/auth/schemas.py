@@ -31,13 +31,25 @@ class UserResponse(UserBase):
 
 
 class Token(BaseModel):
+    """Ответ при успешной аутентификации: оба токена + данные пользователя."""
     access_token: str
+    refresh_token: str
     token_type: str
     user: UserResponse
 
 
 class TokenData(BaseModel):
     username: Optional[str] = None
+
+
+class RefreshTokenRequest(BaseModel):
+    """Тело запроса для обновления access token."""
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    """Тело запроса для выхода из системы."""
+    refresh_token: str
 
 
 # Схема для изменения роли пользователя (только для admin)

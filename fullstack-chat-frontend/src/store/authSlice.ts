@@ -22,11 +22,24 @@ const restoreAuthState = () => {
     } catch (error) {
       console.error('Error parsing stored user:', error);
       localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
       return null;
     }
   }
   return null;
+};
+
+const saveTokens = (accessToken: string, refreshToken: string, user: User) => {
+  localStorage.setItem('access_token', accessToken);
+  localStorage.setItem('refresh_token', refreshToken);
+  localStorage.setItem('user', JSON.stringify(user));
+};
+
+const clearTokens = () => {
+  localStorage.removeItem('access_token');
+  localStorage.removeItem('refresh_token');
+  localStorage.removeItem('user');
 };
 
 // Инициализируем стейт из localStorage
@@ -41,6 +54,7 @@ export const register = createAsyncThunk(
   async (credentials: RegisterCredentials, { rejectWithValue }) => {
     try {
       const response = await authApi.register(credentials);
+      saveTokens(response.access_token, response.refresh_token, response.user);
       return response;
     } catch (error: any) {
       return rejectWithValue(error.response?.data?.detail || 'Registration failed');
@@ -53,8 +67,7 @@ export const login = createAsyncThunk(
   async (credentials: LoginCredentials, { rejectWithValue }) => {
     try {
       const response = await authApi.login(credentials);
-      localStorage.setItem('access_token', response.access_token);
-      localStorage.setItem('user', JSON.stringify(response.user));
+      saveTokens(response.access_token, response.refresh_token, response.user);
       return response;
     } catch (error: any) {
       return rejectWithValue(error.response?.data?.detail || 'Login failed');
@@ -67,8 +80,7 @@ export const guestLogin = createAsyncThunk(
   async (_, { rejectWithValue }) => {
     try {
       const response = await authApi.guestLogin();
-      localStorage.setItem('access_token', response.access_token);
-      localStorage.setItem('user', JSON.stringify(response.user));
+      saveTokens(response.access_token, response.refresh_token, response.user);
       return response;
     } catch (error: any) {
       return rejectWithValue(error.response?.data?.detail || 'Guest login failed');
@@ -78,15 +90,15 @@ export const guestLogin = createAsyncThunk(
 
 export const logout = createAsyncThunk(
   'auth/logout',
-  async (_, { rejectWithValue }) => {
+  async (_) => {
+    const refreshToken = localStorage.getItem('refresh_token') || '';
     try {
-      await authApi.logout();
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('user');
+      // Отзываем refresh token на сервере
+      await authApi.logout(refreshToken);
     } catch (error: any) {
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('user');
-      return rejectWithValue(error.response?.data?.detail || 'Logout failed');
+      // Продолжаем локальную очистку даже если сервер недоступен
+    } finally {
+      clearTokens();
     }
   }
 );
@@ -96,13 +108,10 @@ export const fetchCurrentUser = createAsyncThunk(
   async (_, { rejectWithValue }) => {
     try {
       const user = await authApi.getCurrentUser();
-      // Обновляем данные пользователя в localStorage
       localStorage.setItem('user', JSON.stringify(user));
       return user;
     } catch (error: any) {
-      // Если не удалось получить пользователя, очищаем localStorage
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('user');
+      clearTokens();
       return rejectWithValue(error.response?.data?.detail || 'Failed to fetch user');
     }
   }
@@ -118,6 +127,7 @@ const authSlice = createSlice({
     clearUser: (state) => {
       state.user = null;
       state.token = null;
+      clearTokens();
     },
     restoreAuth: (state) => {
       const restored = restoreAuthState();
@@ -138,8 +148,7 @@ const authSlice = createSlice({
         state.isLoading = false;
         state.user = action.payload.user;
         state.token = action.payload.access_token;
-        localStorage.setItem('access_token', action.payload.access_token);
-        localStorage.setItem('user', JSON.stringify(action.payload.user));
+        // localStorage уже обновлён в thunk через saveTokens()
       })
       .addCase(register.rejected, (state, action) => {
         state.isLoading = false;
@@ -189,6 +198,7 @@ const authSlice = createSlice({
       .addCase(fetchCurrentUser.rejected, (state) => {
         state.user = null;
         state.token = null;
+        // clearTokens() уже вызван в thunk
       });
   },
 });

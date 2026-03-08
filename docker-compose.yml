@@ -1,4 +1,11 @@
+# ====================================================
+# docker-compose.yml — оркестрация всех сервисов
+# Запуск: docker compose up --build
+# ====================================================
+
 services:
+
+  # ── Backend (FastAPI) ────────────────────────────────────────────────────
   backend:
     build:
       context: .
@@ -14,10 +21,14 @@ services:
       # LM Studio запущен на хост-машине → host.docker.internal
       LM_STUDIO_URL: http://host.docker.internal:1234
       LM_STUDIO_MODEL: ${LM_STUDIO_MODEL:-local-model}
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-please}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in .env}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
     # Нужно на Linux (на macOS/Windows Docker Desktop host.docker.internal уже доступен)
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - app-network
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
@@ -26,6 +37,7 @@ services:
       retries: 3
       start_period: 40s
 
+  # ── Frontend (React → nginx) ─────────────────────────────────────────────
   frontend:
     build:
       context: ./fullstack-chat-frontend
@@ -36,8 +48,21 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    networks:
+      - app-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  app-network:
+    driver: bridge
 
 volumes:
   backend_data:

@@ -16,12 +16,18 @@ from app.config import settings
 from app.auth.service import (
     get_current_active_user,
     create_access_token,
+    create_refresh_token,
+    verify_refresh_token,
+    revoke_refresh_token,
     authenticate_user,
     get_password_hash,
     require_admin,
     require_user_or_above,
 )
-from app.auth.schemas import UserCreate, UserLogin, Token, UserResponse, UserRoleUpdate
+from app.auth.schemas import (
+    UserCreate, UserLogin, Token, UserResponse, UserRoleUpdate,
+    RefreshTokenRequest, LogoutRequest,
+)
 from app.auth.models import User, UserRole
 from app.database.connection import get_db, create_tables
 from app.services.chat_service import ChatService
@@ -104,6 +110,11 @@ async def startup_event():
 
 @app.post("/api/auth/register", response_model=Token)
 async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+    """
+    Регистрация нового пользователя.
+    Возвращает access token (30 мин) и refresh token (30 дней).
+    Паттерн: Service Layer — логика хэширования и генерации токенов вынесена в service.py.
+    """
     if db.query(User).filter(User.email == user_data.email).first():
         raise HTTPException(status_code=400, detail="Пользователь с таким email уже зарегистрирован")
 
@@ -121,8 +132,10 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     db.refresh(db_user)
 
     access_token = create_access_token(data={"sub": db_user.username})
+    refresh_token = create_refresh_token(db, db_user.id)
     return Token(
         access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
         user=UserResponse.from_orm(db_user),
     )
@@ -130,6 +143,11 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
 
 @app.post("/api/auth/login", response_model=Token)
 async def login(user_data: UserLogin, db: Session = Depends(get_db)):
+    """
+    Вход в систему.
+    Возвращает access token (30 мин) и refresh token (30 дней).
+    Пароль проверяется через Argon2 (устойчив к GPU-атакам).
+    """
     user = authenticate_user(db, user_data.email, user_data.password)
     if not user:
         raise HTTPException(
@@ -137,12 +155,68 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
             detail="Неверный email или пароль",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Аккаунт деактивирован")
+
     access_token = create_access_token(data={"sub": user.username})
+    refresh_token = create_refresh_token(db, user.id)
     return Token(
         access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
         user=UserResponse.from_orm(user),
     )
+
+
+@app.post("/api/auth/refresh", response_model=Token)
+async def refresh_token_endpoint(body: RefreshTokenRequest, db: Session = Depends(get_db)):
+    """
+    Обновление access token через refresh token.
+    Реализует ротацию токенов (Token Rotation):
+    - старый refresh token отзывается
+    - выдаётся новая пара access + refresh токенов
+    Защита: если refresh token отозван или истёк — 401.
+    """
+    db_token = verify_refresh_token(db, body.refresh_token)
+    if not db_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token недействителен или истёк",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = db.query(User).filter(User.id == db_token.user_id).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="Пользователь не найден или деактивирован")
+
+    # Ротация: отзываем старый refresh token
+    revoke_refresh_token(db, body.refresh_token)
+
+    # Выдаём новую пару токенов
+    new_access_token = create_access_token(data={"sub": user.username})
+    new_refresh_token = create_refresh_token(db, user.id)
+
+    return Token(
+        access_token=new_access_token,
+        refresh_token=new_refresh_token,
+        token_type="bearer",
+        user=UserResponse.from_orm(user),
+    )
+
+
+@app.post("/api/auth/logout")
+async def logout(
+    body: LogoutRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Выход из системы: отзывает refresh token в БД.
+    После этого /auth/refresh с этим токеном вернёт 401.
+    Access token остаётся валидным до истечения (30 мин) — stateless JWT.
+    """
+    revoke_refresh_token(db, body.refresh_token)
+    return {"message": "Выход выполнен успешно"}
 
 
 @app.get("/api/auth/me", response_model=UserResponse)
@@ -182,8 +256,10 @@ async def guest_login(db: Session = Depends(get_db)):
         logger.warning(f"Не удалось создать чат для гостя: {e}")
 
     access_token = create_access_token(data={"sub": guest_user.username})
+    refresh_token = create_refresh_token(db, guest_user.id)
     return Token(
         access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
         user=UserResponse.from_orm(guest_user),
     )

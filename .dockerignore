@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+env/
+
+# Node / Frontend
+fullstack-chat-frontend/node_modules/
+fullstack-chat-frontend/dist/
+fullstack-chat-frontend/.env*
+
+# Database и загрузки (хранятся в volume)
+*.db
+*.sqlite3
+uploads/
+data/
+
+# IDE и прочее
+.idea/
+.vscode/
+*.DS_Store
+*.log
+.env
+.env.local

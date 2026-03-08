@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
@@ -7,7 +9,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.auth.models import User, UserRole
+from app.auth.models import User, UserRole, RefreshToken
 from app.auth.schemas import TokenData
 from app.database.connection import get_db
 
@@ -37,6 +39,86 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
+
+# ==================== REFRESH TOKEN ====================
+
+def _hash_token(token: str) -> str:
+    """SHA-256 хэш токена. В БД храним только хэш."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def create_refresh_token(db: Session, user_id: int) -> str:
+    """
+    Генерирует криптографически безопасный refresh token,
+    сохраняет его хэш в БД и возвращает исходный токен клиенту.
+    Паттерн Repository: инкапсулирует работу с БД.
+    """
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _hash_token(raw_token)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+
+    db_token = RefreshToken(
+        user_id=user_id,
+        token_hash=token_hash,
+        expires_at=expires_at,
+    )
+    db.add(db_token)
+    db.commit()
+    return raw_token
+
+
+def verify_refresh_token(db: Session, raw_token: str) -> Optional[RefreshToken]:
+    """
+    Проверяет refresh token: ищет в БД по хэшу,
+    проверяет срок действия и статус отзыва.
+    Возвращает None при любой невалидности — не раскрывает причину (security).
+    """
+    token_hash = _hash_token(raw_token)
+    db_token = db.query(RefreshToken).filter(
+        RefreshToken.token_hash == token_hash
+    ).first()
+
+    if not db_token:
+        return None
+    if db_token.is_revoked:
+        return None
+    # Сравниваем timezone-aware даты
+    expires_at = db_token.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        return None
+
+    return db_token
+
+
+def revoke_refresh_token(db: Session, raw_token: str) -> bool:
+    """
+    Отзывает refresh token (logout / смена пароля).
+    Возвращает True если токен найден и отозван, False если не найден.
+    """
+    token_hash = _hash_token(raw_token)
+    db_token = db.query(RefreshToken).filter(
+        RefreshToken.token_hash == token_hash
+    ).first()
+    if db_token:
+        db_token.is_revoked = True
+        db.commit()
+        return True
+    return False
+
+
+def revoke_all_user_refresh_tokens(db: Session, user_id: int) -> int:
+    """Отзывает все активные refresh токены пользователя (принудительный выход)."""
+    count = db.query(RefreshToken).filter(
+        RefreshToken.user_id == user_id,
+        RefreshToken.is_revoked == False,
+    ).update({"is_revoked": True})
+    db.commit()
+    return count
+
+
+# ==================== USER QUERIES ====================
 
 def get_user_by_email(db: Session, email: str) -> Optional[User]:
     return db.query(User).filter(User.email == email).first()
