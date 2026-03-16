@@ -1,8 +1,9 @@
 import logging
+import math
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import desc
+from sqlalchemy import asc, desc
 from sqlalchemy.orm import Session
 
 from app.models.chat_models import ChatSession, ChatMessage
@@ -12,6 +13,7 @@ from app.models.chat_schemas import (
     ChatMessageCreate,
     ChatMessageResponse,
     ChatSessionListResponse,
+    PaginatedResponse,
     SessionType,
     MessageType,
 )
@@ -53,33 +55,104 @@ class ChatService:
             logger.error(f"❌ Ошибка создания сессии чата: {e}")
             raise
 
-    def get_user_chat_sessions(self, user_id: int) -> List[ChatSessionListResponse]:
-        """Получение списка чатов пользователя с последним сообщением"""
+    def get_user_chat_sessions(
+        self,
+        user_id: int,
+        search: Optional[str] = None,
+        session_type: Optional[str] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+        page: int = 1,
+        page_size: int = 10,
+        paginate: bool = False,
+    ):
+        """Получение списка чатов пользователя с поддержкой фильтрации и пагинации."""
         try:
-            chat_sessions = (
-                self.db.query(ChatSession)
-                .filter(ChatSession.user_id == user_id, ChatSession.is_active.is_(True))
-                .order_by(desc(ChatSession.updated_at))
-                .all()
+            query = self.db.query(ChatSession).filter(
+                ChatSession.user_id == user_id,
+                ChatSession.is_active.is_(True),
             )
-            return [self._build_list_response(chat) for chat in chat_sessions]
+            query = self._apply_filters(query, search, session_type, date_from, date_to)
+
+            if not paginate:
+                # Backward-compatible: return all as list
+                query = self._apply_sort(query, sort_by, sort_order)
+                return [self._build_list_response(chat) for chat in query.all()]
+
+            total = query.count()
+            query = self._apply_sort(query, sort_by, sort_order)
+            offset = (page - 1) * page_size
+            items = [self._build_list_response(c) for c in query.offset(offset).limit(page_size).all()]
+            return PaginatedResponse(
+                items=items,
+                total=total,
+                page=page,
+                page_size=page_size,
+                pages=max(1, math.ceil(total / page_size)),
+            )
         except Exception as e:
             logger.error(f"❌ Ошибка получения списка чатов: {e}")
             raise
 
-    def get_all_chat_sessions(self) -> List[ChatSessionListResponse]:
-        """Получение всех чатов (для moderator/admin)"""
+    def get_all_chat_sessions(
+        self,
+        search: Optional[str] = None,
+        session_type: Optional[str] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+        page: int = 1,
+        page_size: int = 10,
+        paginate: bool = False,
+    ):
+        """Получение всех чатов (для moderator/admin) с поддержкой фильтрации и пагинации."""
         try:
-            chat_sessions = (
-                self.db.query(ChatSession)
-                .filter(ChatSession.is_active.is_(True))
-                .order_by(desc(ChatSession.updated_at))
-                .all()
+            query = self.db.query(ChatSession).filter(ChatSession.is_active.is_(True))
+            query = self._apply_filters(query, search, session_type, date_from, date_to)
+
+            if not paginate:
+                query = self._apply_sort(query, sort_by, sort_order)
+                return [self._build_list_response(chat) for chat in query.all()]
+
+            total = query.count()
+            query = self._apply_sort(query, sort_by, sort_order)
+            offset = (page - 1) * page_size
+            items = [self._build_list_response(c) for c in query.offset(offset).limit(page_size).all()]
+            return PaginatedResponse(
+                items=items,
+                total=total,
+                page=page,
+                page_size=page_size,
+                pages=max(1, math.ceil(total / page_size)),
             )
-            return [self._build_list_response(chat) for chat in chat_sessions]
         except Exception as e:
             logger.error(f"❌ Ошибка получения всех чатов: {e}")
             raise
+
+    def _apply_filters(self, query, search, session_type, date_from, date_to):
+        if search:
+            query = query.filter(ChatSession.title.ilike(f"%{search}%"))
+        if session_type:
+            query = query.filter(ChatSession.session_type == session_type)
+        if date_from:
+            query = query.filter(ChatSession.created_at >= date_from)
+        if date_to:
+            query = query.filter(ChatSession.created_at <= date_to)
+        return query
+
+    def _apply_sort(self, query, sort_by: str, sort_order: str):
+        sort_column_map = {
+            "created_at": ChatSession.created_at,
+            "updated_at": ChatSession.updated_at,
+            "title": ChatSession.title,
+        }
+        column = sort_column_map.get(sort_by, ChatSession.created_at)
+        if sort_order == "asc":
+            return query.order_by(asc(column))
+        return query.order_by(desc(column))
 
     def _build_list_response(self, chat: ChatSession) -> ChatSessionListResponse:
         """Вспомогательный метод: строит ChatSessionListResponse для одного чата"""

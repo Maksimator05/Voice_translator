@@ -35,12 +35,20 @@ export interface ChatSessionListResponse {
   session_type: 'text' | 'audio' | 'meeting';
 }
 
+export interface PaginationInfo {
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
 export interface ChatState {
   chats: ChatSessionListResponse[];
   currentChat: Chat | null;
   isLoading: boolean;
   isSending: boolean;
   error: string | null;
+  pagination: PaginationInfo | null;
   /** @deprecated Не используется — polling управляется через LongPollingService */
   pollingInterval?: number | null;
 }

@@ -1,8 +1,10 @@
 from fastapi import UploadFile
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Generic, List, Optional, Dict, Any, TypeVar
 from enum import Enum
+
+T = TypeVar("T")
 
 class SessionType(str, Enum):
     TEXT = "text"
@@ -70,3 +72,11 @@ class DeleteChatResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: List[T]
+    total: int
+    page: int
+    page_size: int
+    pages: int

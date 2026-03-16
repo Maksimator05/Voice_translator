@@ -5,6 +5,28 @@
 
 services:
 
+  # ── MinIO (S3-compatible object storage) ────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - app-network
+    restart: unless-stopped
+
   # ── Backend (FastAPI) ────────────────────────────────────────────────────
   backend:
     build:
@@ -24,9 +46,16 @@ services:
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in .env}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-voice-translator}
     # Нужно на Linux (на macOS/Windows Docker Desktop host.docker.internal уже доступен)
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      minio:
+        condition: service_healthy
     networks:
       - app-network
     restart: unless-stopped
@@ -67,3 +96,4 @@ networks:
 volumes:
   backend_data:
   backend_uploads:
+  minio_data:

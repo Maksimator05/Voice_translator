@@ -46,6 +46,9 @@ def create_tables():
         from app.models.meeting_models import AnalysisResult  # noqa: F401
         print("✅ Модель AnalysisResult импортирована")
 
+        from app.models.file_models import FileAttachment  # noqa: F401
+        print("✅ Модель FileAttachment импортирована")
+
         # 4. Создаем остальные таблицы
         Base.metadata.create_all(bind=engine)
         print("✅ Все таблицы созданы")

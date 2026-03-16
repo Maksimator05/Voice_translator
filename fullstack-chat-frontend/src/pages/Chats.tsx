@@ -15,7 +15,6 @@ import {
   ListItemAvatar,
   ListItemText,
   ListItemSecondaryAction,
-  InputAdornment,
   Divider,
   Dialog,
   DialogTitle,
@@ -31,11 +30,11 @@ import {
   Chip,
   Tooltip,
   LinearProgress,
+  Pagination,
 } from '@mui/material';
 import {
   Send,
   Add,
-  Search,
   MoreVert,
   Delete,
   Edit,
@@ -48,13 +47,16 @@ import {
   Lock,
   HourglassEmpty,
 } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '../hooks/useRedux';
 import { logout } from '../store/authSlice';
 import { fetchChats, createChat, askAI, fetchChat, deleteChat } from '../store/chatSlice';
 import { longPollingService } from '../api/longpolling';
 import { useRBAC, GUEST_TRANSCRIPTION_LIMIT } from '../hooks/useRBAC';
 import type { Chat, Message } from '../types';
+import ChatFilters, { type FilterState } from '../components/chat/ChatFilters';
+import FileUpload from '../components/chat/FileUpload';
+import FileAttachments from '../components/chat/FileAttachments';
 
 const MESSAGES_CACHE_KEY = 'chat_messages_cache';
 
@@ -67,8 +69,9 @@ const ROLE_CHIP_COLOR: Record<string, 'default' | 'primary' | 'error'> = {
 const ChatsPage: React.FC = () => {
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
+  const [searchParams] = useSearchParams();
   const { user, token } = useAppSelector((state) => state.auth);
-  const { chats: storeChats, isLoading, isSending } = useAppSelector((state) => state.chat);
+  const { chats: storeChats, isLoading, isSending, pagination } = useAppSelector((state) => state.chat);
 
   const {
     canCreateChat,
@@ -88,7 +91,8 @@ const ChatsPage: React.FC = () => {
   const [selectedChat, setSelectedChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
-  const [searchTerm, setSearchTerm] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [fileRefreshToken, setFileRefreshToken] = useState(0);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newChatTitle, setNewChatTitle] = useState('New Chat');
   const [newChatType, setNewChatType] = useState<'text' | 'audio' | 'meeting'>('text');
@@ -111,8 +115,10 @@ const ChatsPage: React.FC = () => {
       navigate('/auth');
       return;
     }
-    loadChats();
-  }, [token, navigate]);
+    setCurrentPage(1);
+    loadChats(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, navigate, searchParams]);
 
   useEffect(() => {
     if (storeChats.length > 0) {
@@ -212,9 +218,22 @@ const ChatsPage: React.FC = () => {
     }
   };
 
-  const loadChats = async () => {
+  const buildFiltersFromParams = (params: URLSearchParams, page = 1) => ({
+    search: params.get('search') || undefined,
+    session_type: params.get('session_type') || undefined,
+    date_from: params.get('date_from') || undefined,
+    date_to: params.get('date_to') || undefined,
+    sort_by: params.get('sort_by') || 'created_at',
+    sort_order: params.get('sort_order') || 'desc',
+    page,
+    page_size: 10,
+    paginate: true,
+  });
+
+  const loadChats = async (page = 1) => {
     try {
-      await dispatch(fetchChats());
+      const filters = buildFiltersFromParams(searchParams, page);
+      await dispatch(fetchChats(filters));
     } catch (error: any) {
       setError(error.response?.data?.detail || 'Failed to load chats');
     }
@@ -356,7 +375,7 @@ const ChatsPage: React.FC = () => {
         setCreateDialogOpen(false);
         setNewChatTitle('New Chat');
         setNewChatType('text');
-        await loadChats();
+        await loadChats(currentPage);
         saveMessagesToCache(newChat.id, []);
       }
     } catch (error: any) {
@@ -461,9 +480,19 @@ const ChatsPage: React.FC = () => {
     return false;
   };
 
-  const filteredChats = chats.filter((chat) =>
-    chat.title.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // With server-side filtering active, all chats in store are already filtered
+  const filteredChats = chats;
+
+  const handleFiltersChange = (_filters: FilterState) => {
+    setCurrentPage(1);
+    // URL params are already updated by ChatFilters; the searchParams change
+    // triggers the loadChats useEffect above.
+  };
+
+  const handlePageChange = (_: React.ChangeEvent<unknown>, page: number) => {
+    setCurrentPage(page);
+    loadChats(page);
+  };
 
   const getChatTypeIcon = (type: string) => {
     switch (type) {
@@ -637,32 +666,12 @@ const ChatsPage: React.FC = () => {
             <Paper sx={{ height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: 2 }}>
               <Box p={2} borderBottom="1px solid #334155">
                 <Typography variant="h6" gutterBottom sx={{ color: '#f1f5f9' }}>
-                  Chats ({chats.length})
+                  Chats {pagination ? `(${pagination.total})` : `(${chats.length})`}
                 </Typography>
-                <TextField
-                  fullWidth
-                  placeholder="Search chats..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  size="small"
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      backgroundColor: '#0f172a',
-                      '& fieldset': { borderColor: '#334155' },
-                      '&:hover fieldset': { borderColor: '#475569' },
-                      '&.Mui-focused fieldset': { borderColor: '#7C3AED' },
-                    },
-                    '& .MuiInputBase-input': { color: '#f1f5f9' },
-                  }}
-                  InputProps={{
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <Search fontSize="small" sx={{ color: '#94a3b8' }} />
-                      </InputAdornment>
-                    ),
-                  }}
-                />
               </Box>
+
+              {/* Filter panel */}
+              <ChatFilters onFiltersChange={handleFiltersChange} />
 
               <Box p={2}>
                 {canCreateChat ? (
@@ -770,6 +779,28 @@ const ChatsPage: React.FC = () => {
                   </Box>
                 )}
               </Box>
+
+              {/* Pagination */}
+              {pagination && pagination.pages > 1 && (
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 1.5, borderTop: '1px solid #334155' }}>
+                  <Pagination
+                    count={pagination.pages}
+                    page={currentPage}
+                    onChange={handlePageChange}
+                    size="small"
+                    sx={{
+                      '& .MuiPaginationItem-root': {
+                        color: '#94a3b8',
+                        '&.Mui-selected': {
+                          backgroundColor: 'rgba(124, 58, 237, 0.2)',
+                          color: '#A78BFA',
+                        },
+                        '&:hover': { backgroundColor: 'rgba(124, 58, 237, 0.1)' },
+                      },
+                    }}
+                  />
+                </Box>
+              )}
             </Paper>
           </Grid>
 
@@ -893,6 +924,19 @@ const ChatsPage: React.FC = () => {
                     )}
                   </Box>
 
+                  {/* File attachments */}
+                  <Box sx={{ borderTop: '1px solid #334155', backgroundColor: 'rgba(15, 23, 42, 0.3)' }}>
+                    <Box sx={{ px: 2, pt: 1 }}>
+                      <Typography variant="caption" sx={{ color: '#475569' }}>Attachments</Typography>
+                    </Box>
+                    <FileAttachments
+                      chatId={selectedChat.id}
+                      currentUserId={user?.id || 0}
+                      isAdmin={isAdmin}
+                      refreshToken={fileRefreshToken}
+                    />
+                  </Box>
+
                   {/* Input area */}
                   <Box p={2} borderTop="1px solid #334155">
                     {guestLimitReached ? (
@@ -938,7 +982,7 @@ const ChatsPage: React.FC = () => {
                               }}
                             />
                           </Grid>
-                          <Grid>
+                          <Grid sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                             <IconButton
                               onClick={() => fileInputRef.current?.click()}
                               disabled={isSending || uploadingAudio}
@@ -946,12 +990,16 @@ const ChatsPage: React.FC = () => {
                                 color: '#7C3AED',
                                 backgroundColor: 'rgba(124, 58, 237, 0.1)',
                                 '&:hover': { backgroundColor: 'rgba(124, 58, 237, 0.2)' },
-                                mr: 1,
                               }}
                               title="Upload audio file"
                             >
                               {uploadingAudio ? <CircularProgress size={20} sx={{ color: '#7C3AED' }} /> : <AttachFile />}
                             </IconButton>
+                            <FileUpload
+                              chatId={selectedChat.id}
+                              disabled={isSending || uploadingAudio}
+                              onUploaded={() => setFileRefreshToken((t) => t + 1)}
+                            />
                             <IconButton
                               color="primary"
                               onClick={handleSendMessage}

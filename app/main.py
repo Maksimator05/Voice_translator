@@ -2,8 +2,9 @@ import asyncio
 import base64
 import tempfile
 import os
+import uuid as _uuid
 
-from fastapi import FastAPI, Depends, status, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, Depends, Query, status, UploadFile, File, HTTPException, Form
 from datetime import datetime
 import logging
 from typing import List, Optional, Dict
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models.chat_models import ChatMessage
+from app.models.file_models import FileAttachment
 from app.config import settings
 from app.auth.service import (
     get_current_active_user,
@@ -37,10 +39,13 @@ from app.models.chat_schemas import (
     ChatMessageCreate,
     ChatMessageResponse,
     ChatSessionListResponse,
+    PaginatedResponse,
     DeleteChatResponse,
 )
+from app.models.file_schemas import FileAttachmentResponse, FileDownloadResponse
 from app.services.llm_processor import LLMProcessor
 from app.services.audio_processor import audio_processor
+from app.services.storage_service import storage_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -282,17 +287,43 @@ async def create_chat(
         raise HTTPException(status_code=500, detail="Ошибка создания чата")
 
 
-@app.get("/api/chats", response_model=List[ChatSessionListResponse])
+@app.get("/api/chats")
 async def get_chats(
+    search: Optional[str] = Query(None, description="Search in title"),
+    session_type: Optional[str] = Query(None, description="Filter by text/audio/meeting"),
+    date_from: Optional[datetime] = Query(None, description="created_at >="),
+    date_to: Optional[datetime] = Query(None, description="created_at <="),
+    sort_by: str = Query("created_at", description="created_at | updated_at | title"),
+    sort_order: str = Query("desc", description="asc | desc"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(10, ge=1, le=100, description="Items per page"),
+    paginate: bool = Query(False, description="Return paginated response"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """Получение списка чатов. Admin видит все чаты."""
+    """Получение списка чатов с фильтрацией, сортировкой и пагинацией. Admin видит все чаты."""
     try:
+        # Validate sort_by and sort_order
+        if sort_by not in ("created_at", "updated_at", "title"):
+            sort_by = "created_at"
+        if sort_order not in ("asc", "desc"):
+            sort_order = "desc"
+
         chat_service = ChatService(db)
+        kwargs = dict(
+            search=search,
+            session_type=session_type,
+            date_from=date_from,
+            date_to=date_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            page_size=page_size,
+            paginate=paginate,
+        )
         if current_user.role == UserRole.ADMIN:
-            return chat_service.get_all_chat_sessions()
-        return chat_service.get_user_chat_sessions(current_user.id)
+            return chat_service.get_all_chat_sessions(**kwargs)
+        return chat_service.get_user_chat_sessions(current_user.id, **kwargs)
     except Exception as e:
         logger.error(f"❌ Ошибка получения списка чатов: {e}")
         raise HTTPException(status_code=500, detail="Ошибка получения чатов")
@@ -488,6 +519,125 @@ async def delete_chat(
     except Exception as e:
         logger.error(f"❌ Ошибка удаления чата {chat_id}: {e}")
         raise HTTPException(status_code=500, detail="Ошибка удаления чата")
+
+
+# ==================== ЭНДПОИНТЫ ФАЙЛОВ ====================
+
+@app.post("/api/chats/{chat_id}/files", response_model=FileAttachmentResponse)
+async def upload_file(
+    chat_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_user_or_above),
+    db: Session = Depends(get_db),
+):
+    """Загрузка файла в чат. Доступно: user, admin."""
+    chat_service = ChatService(db)
+    chat = chat_service.get_chat_session(chat_id, current_user.id)
+    if not chat and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=404, detail="Чат не найден")
+    if current_user.role == UserRole.ADMIN and not chat:
+        chat = chat_service.get_chat_session_by_id(chat_id)
+        if not chat:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+
+    file_bytes = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+
+    error = storage_service.validate_file(len(file_bytes), content_type)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+    ext = os.path.splitext(file.filename or "")[1]
+    s3_key = f"chats/{chat_id}/{_uuid.uuid4().hex}{ext}"
+
+    try:
+        storage_service.upload_file(file_bytes, s3_key, content_type)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    attachment = FileAttachment(
+        user_id=current_user.id,
+        chat_session_id=chat_id,
+        original_filename=file.filename or "upload",
+        content_type=content_type,
+        file_size=len(file_bytes),
+        s3_key=s3_key,
+    )
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+    return attachment
+
+
+@app.get("/api/chats/{chat_id}/files", response_model=List[FileAttachmentResponse])
+async def list_chat_files(
+    chat_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Список файлов чата."""
+    chat_service = ChatService(db)
+    if current_user.role == UserRole.ADMIN:
+        chat = chat_service.get_chat_session_by_id(chat_id)
+    else:
+        chat = chat_service.get_chat_session(chat_id, current_user.id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Чат не найден")
+
+    files = (
+        db.query(FileAttachment)
+        .filter(FileAttachment.chat_session_id == chat_id)
+        .order_by(FileAttachment.created_at.desc())
+        .all()
+    )
+    return files
+
+
+@app.get("/api/files/{file_id}/url", response_model=FileDownloadResponse)
+async def get_file_url(
+    file_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Получить pre-signed URL для скачивания файла."""
+    attachment = db.query(FileAttachment).filter(FileAttachment.id == file_id).first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+
+    # Only owner or admin can download
+    if attachment.user_id != current_user.id and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Нет доступа к файлу")
+
+    try:
+        url = storage_service.get_presigned_url(attachment.s3_key)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    return FileDownloadResponse(url=url)
+
+
+@app.delete("/api/files/{file_id}", status_code=204)
+async def delete_file(
+    file_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Удаление файла. Доступно: владелец или admin."""
+    attachment = db.query(FileAttachment).filter(FileAttachment.id == file_id).first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+
+    if attachment.user_id != current_user.id and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Нет доступа к файлу")
+
+    try:
+        storage_service.delete_file(attachment.s3_key)
+    except RuntimeError as e:
+        logger.warning(f"Could not delete from S3 (proceeding with DB delete): {e}")
+
+    db.delete(attachment)
+    db.commit()
+    return None
 
 
 # ==================== ЭНДПОИНТЫ АДМИНИСТРАТОРА ====================

@@ -1,10 +1,42 @@
 import { api } from '.';
-import { Chat, Message, AIResponse } from '../types';
+import { Chat, Message, AIResponse, ChatSessionListResponse } from '../types';
+
+export interface ChatFilters {
+  search?: string;
+  session_type?: string;
+  date_from?: string;
+  date_to?: string;
+  sort_by?: string;
+  sort_order?: string;
+  page?: number;
+  page_size?: number;
+  paginate?: boolean;
+}
+
+export interface PaginatedChats {
+  items: ChatSessionListResponse[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
 
 export const chatApi = {
-  // Получить все чаты пользователя
-  getChats: async (): Promise<Chat[]> => {
-    const response = await api.get<Chat[]>('/chats');
+  // Получить все чаты пользователя (с опциональной фильтрацией и пагинацией)
+  getChats: async (filters?: ChatFilters): Promise<ChatSessionListResponse[] | PaginatedChats> => {
+    const params: Record<string, any> = {};
+    if (filters) {
+      if (filters.search) params.search = filters.search;
+      if (filters.session_type) params.session_type = filters.session_type;
+      if (filters.date_from) params.date_from = filters.date_from;
+      if (filters.date_to) params.date_to = filters.date_to;
+      if (filters.sort_by) params.sort_by = filters.sort_by;
+      if (filters.sort_order) params.sort_order = filters.sort_order;
+      if (filters.page) params.page = filters.page;
+      if (filters.page_size) params.page_size = filters.page_size;
+      if (filters.paginate !== undefined) params.paginate = filters.paginate;
+    }
+    const response = await api.get('/chats', { params });
     return response.data;
   },
 

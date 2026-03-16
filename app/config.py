@@ -67,6 +67,12 @@ class Settings:
     # Пути для сохранения визуализаций
     VISUALIZATIONS_DIR: str = "uploads/visualizations"
 
+    # S3 / MinIO settings
+    S3_ENDPOINT_URL: str = os.getenv("S3_ENDPOINT_URL", "http://localhost:9000")
+    S3_ACCESS_KEY: str = os.getenv("S3_ACCESS_KEY", "minioadmin")
+    S3_SECRET_KEY: str = os.getenv("S3_SECRET_KEY", "minioadmin")
+    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "voice-translator")
+
     @property
     def allowed_content_types(self) -> List[str]:
         return self.ALLOWED_AUDIO_TYPES + self.ALLOWED_VIDEO_TYPES

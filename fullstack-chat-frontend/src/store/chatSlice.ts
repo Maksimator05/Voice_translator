@@ -1,5 +1,5 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
-import { chatApi } from '../api/chat';
+import { chatApi, ChatFilters, PaginatedChats } from '../api/chat';
 import { Chat, ChatState, Message, ChatSessionListResponse } from '../types';
 
 const initialState: ChatState = {
@@ -8,13 +8,14 @@ const initialState: ChatState = {
   isLoading: false,
   isSending: false,
   error: null,
+  pagination: null,
 };
 
 export const fetchChats = createAsyncThunk(
   'chat/fetchChats',
-  async (_, { rejectWithValue }) => {
+  async (filters: ChatFilters | undefined = undefined, { rejectWithValue }) => {
     try {
-      return await chatApi.getChats();
+      return await chatApi.getChats(filters);
     } catch (error: any) {
       return rejectWithValue(error.response?.data?.error || 'Failed to fetch chats');
     }
@@ -227,9 +228,21 @@ const chatSlice = createSlice({
         state.isLoading = true;
         state.error = null;
       })
-      .addCase(fetchChats.fulfilled, (state, action: PayloadAction<ChatSessionListResponse[]>) => {
+      .addCase(fetchChats.fulfilled, (state, action) => {
         state.isLoading = false;
-        state.chats = action.payload;
+        const payload = action.payload as ChatSessionListResponse[] | PaginatedChats;
+        if (Array.isArray(payload)) {
+          state.chats = payload;
+          state.pagination = null;
+        } else {
+          state.chats = payload.items;
+          state.pagination = {
+            total: payload.total,
+            page: payload.page,
+            page_size: payload.page_size,
+            pages: payload.pages,
+          };
+        }
       })
       .addCase(fetchChats.rejected, (state, action) => {
         state.isLoading = false;
