@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useRef, useCallback } from 'react';
 import {
   Container,
   Paper,
@@ -55,8 +55,10 @@ import { longPollingService } from '../api/longpolling';
 import { useRBAC, GUEST_TRANSCRIPTION_LIMIT } from '../hooks/useRBAC';
 import type { Chat, Message } from '../types';
 import ChatFilters, { type FilterState } from '../components/chat/ChatFilters';
-import FileUpload from '../components/chat/FileUpload';
-import FileAttachments from '../components/chat/FileAttachments';
+import SeoHead from '../components/seo/SeoHead';
+
+const FileUpload = lazy(() => import('../components/chat/FileUpload'));
+const FileAttachments = lazy(() => import('../components/chat/FileAttachments'));
 
 const MESSAGES_CACHE_KEY = 'chat_messages_cache';
 
@@ -536,6 +538,12 @@ const ChatsPage: React.FC = () => {
   if (isLoading && chats.length === 0) {
     return (
       <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#0f172a' }}>
+        <SeoHead
+          title="Private chats and meeting sessions"
+          description="Protected workspace for chat sessions, audio transcription, and meeting analysis."
+          canonicalPath="/chats"
+          robots="noindex,nofollow"
+        />
         <Box sx={{ textAlign: 'center' }}>
           <CircularProgress sx={{ color: '#7C3AED', mb: 2 }} />
           <Typography sx={{ color: '#f1f5f9' }}>Loading chats...</Typography>
@@ -545,13 +553,19 @@ const ChatsPage: React.FC = () => {
   }
 
   return (
-    <Box sx={{ backgroundColor: '#0f172a', minHeight: '100vh' }}>
+    <Box component="main" sx={{ backgroundColor: '#0f172a', minHeight: '100vh' }}>
+      <SeoHead
+        title="Private chats and meeting sessions"
+        description="Protected workspace for chat sessions, audio transcription, and meeting analysis."
+        canonicalPath="/chats"
+        robots="noindex,nofollow"
+      />
       <Container maxWidth="xl" sx={{ pt: 2, pb: 4, height: 'calc(100vh - 32px)' }}>
         <input type="file" ref={fileInputRef} onChange={handleFileSelect} accept="audio/*" style={{ display: 'none' }} />
 
         {/* Header */}
         <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Typography variant="h4" sx={{
+          <Typography component="h1" variant="h4" sx={{
             background: 'linear-gradient(135deg, #7C3AED 0%, #EC4899 100%)',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
@@ -929,12 +943,14 @@ const ChatsPage: React.FC = () => {
                     <Box sx={{ px: 2, pt: 1 }}>
                       <Typography variant="caption" sx={{ color: '#475569' }}>Attachments</Typography>
                     </Box>
-                    <FileAttachments
-                      chatId={selectedChat.id}
-                      currentUserId={user?.id || 0}
-                      isAdmin={isAdmin}
-                      refreshToken={fileRefreshToken}
-                    />
+                    <Suspense fallback={<Box sx={{ px: 2, py: 1.5, color: '#94a3b8' }}>Loading attachments...</Box>}>
+                      <FileAttachments
+                        chatId={selectedChat.id}
+                        currentUserId={user?.id || 0}
+                        isAdmin={isAdmin}
+                        refreshToken={fileRefreshToken}
+                      />
+                    </Suspense>
                   </Box>
 
                   {/* Input area */}
@@ -995,11 +1011,13 @@ const ChatsPage: React.FC = () => {
                             >
                               {uploadingAudio ? <CircularProgress size={20} sx={{ color: '#7C3AED' }} /> : <AttachFile />}
                             </IconButton>
-                            <FileUpload
-                              chatId={selectedChat.id}
-                              disabled={isSending || uploadingAudio}
-                              onUploaded={() => setFileRefreshToken((t) => t + 1)}
-                            />
+                            <Suspense fallback={<Box sx={{ width: 40 }} />}>
+                              <FileUpload
+                                chatId={selectedChat.id}
+                                disabled={isSending || uploadingAudio}
+                                onUploaded={() => setFileRefreshToken((t) => t + 1)}
+                              />
+                            </Suspense>
                             <IconButton
                               color="primary"
                               onClick={handleSendMessage}

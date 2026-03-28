@@ -1,0 +1,14 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#0F172A"/>
+  <circle cx="182" cy="126" r="220" fill="#7C3AED" fill-opacity="0.18"/>
+  <circle cx="1010" cy="118" r="182" fill="#EC4899" fill-opacity="0.16"/>
+  <rect x="96" y="118" width="1008" height="394" rx="36" fill="#111C32" stroke="#334155" stroke-width="2"/>
+  <rect x="148" y="176" width="330" height="250" rx="24" fill="#17253E"/>
+  <rect x="522" y="176" width="530" height="68" rx="20" fill="#17253E"/>
+  <rect x="522" y="270" width="530" height="68" rx="20" fill="#17253E"/>
+  <rect x="522" y="364" width="376" height="68" rx="20" fill="#17253E"/>
+  <text x="148" y="96" fill="#E2E8F0" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="700">Intelligent Meeting Analyzer</text>
+  <text x="148" y="228" fill="#F8FAFC" font-family="Inter, Arial, sans-serif" font-size="54" font-weight="800">AI transcripts, meeting summaries,</text>
+  <text x="148" y="296" fill="#F8FAFC" font-family="Inter, Arial, sans-serif" font-size="54" font-weight="800">and searchable team decisions.</text>
+  <text x="148" y="372" fill="#CBD5E1" font-family="Inter, Arial, sans-serif" font-size="28">Public SEO pages on top, protected chat workflows underneath.</text>
+</svg>

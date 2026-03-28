@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Container,
   Paper,
@@ -20,7 +20,8 @@ import {
   Lock,
   Person,
 } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link as RouterLink } from 'react-router-dom';
+import SeoHead from '../components/seo/SeoHead';
 import { useAppDispatch, useAppSelector } from '../hooks/useRedux';
 import { login, register, clearError, guestLogin } from '../store/authSlice';
 import { darkTheme } from '../theme';
@@ -72,10 +73,9 @@ const AuthPage: React.FC = () => {
     await dispatch(guestLogin() as any);
   };
 
-  // Успешная регистрация — переключаемся на логин
   useEffect(() => {
     if (user && token && !isLogin) {
-      setSuccessMessage('Registration successful! Please sign in.');
+      setSuccessMessage('Регистрация прошла успешно. Теперь войдите в аккаунт.');
       setShowSuccessSnackbar(true);
       setIsLogin(true);
       setFormData({ email: '', username: '', password: '', confirmPassword: '', full_name: '' });
@@ -84,14 +84,12 @@ const AuthPage: React.FC = () => {
     }
   }, [user, token, isLogin]);
 
-  // Успешный вход (обычный или гостевой) — редирект в чаты
   useEffect(() => {
     if (user && token && (isLogin || user.role === 'guest')) {
       navigate('/chats', { replace: true });
     }
   }, [user, token, isLogin, navigate]);
 
-  // Сброс ошибки при переключении режима
   useEffect(() => {
     dispatch(clearError());
     setFormData({ email: '', username: '', password: '', confirmPassword: '', full_name: '' });
@@ -99,6 +97,12 @@ const AuthPage: React.FC = () => {
 
   return (
     <ThemeProvider theme={darkTheme}>
+      <SeoHead
+        title="Вход и регистрация"
+        description="Закрытая страница авторизации для рабочего пространства анализа встреч."
+        canonicalPath="/auth"
+        robots="noindex,nofollow"
+      />
       <Container maxWidth="sm" sx={{ mt: 8, mb: 8 }}>
         <Paper
           elevation={8}
@@ -113,6 +117,7 @@ const AuthPage: React.FC = () => {
           <Box textAlign="center" mb={4}>
             <Typography
               variant="h4"
+              component="h1"
               sx={{
                 mb: 1,
                 background: 'linear-gradient(135deg, #7C3AED 0%, #EC4899 100%)',
@@ -124,7 +129,10 @@ const AuthPage: React.FC = () => {
               AI Chat Assistant
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Intelligent chat with text and audio analysis
+              Интеллектуальный чат с текстовым и аудиоанализом
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', mt: 1.5, color: '#94a3b8' }}>
+              Публичная страница: <Link component={RouterLink} to="/resources" sx={{ color: '#c4b5fd' }}>материалы</Link>
             </Typography>
           </Box>
 
@@ -134,21 +142,20 @@ const AuthPage: React.FC = () => {
             </Alert>
           )}
 
-          {/* Переключатель Sign In / Sign Up — без Guest */}
           <Box display="flex" justifyContent="center" mb={3}>
             <Button
               variant={isLogin ? 'contained' : 'outlined'}
               onClick={() => setIsLogin(true)}
               sx={{ mr: 2, borderRadius: 2 }}
             >
-              Sign In
+              Вход
             </Button>
             <Button
               variant={!isLogin ? 'contained' : 'outlined'}
               onClick={() => setIsLogin(false)}
               sx={{ borderRadius: 2 }}
             >
-              Sign Up
+              Регистрация
             </Button>
           </Box>
 
@@ -176,7 +183,7 @@ const AuthPage: React.FC = () => {
             {!isLogin && (
               <TextField
                 fullWidth
-                label="Username"
+                label="Имя пользователя"
                 name="username"
                 value={formData.username}
                 onChange={handleChange}
@@ -196,7 +203,7 @@ const AuthPage: React.FC = () => {
 
             <TextField
               fullWidth
-              label="Password"
+              label="Пароль"
               name="password"
               type={showPassword ? 'text' : 'password'}
               value={formData.password}
@@ -229,7 +236,7 @@ const AuthPage: React.FC = () => {
             {!isLogin && (
               <TextField
                 fullWidth
-                label="Confirm Password"
+                label="Подтвердите пароль"
                 name="confirmPassword"
                 type={showConfirmPassword ? 'text' : 'password'}
                 value={formData.confirmPassword}
@@ -260,9 +267,7 @@ const AuthPage: React.FC = () => {
               />
             )}
 
-            {/* Кнопки внизу формы */}
             {isLogin ? (
-              // Режим входа: Sign In + Guest рядом
               <Box display="flex" gap={1} mt={3}>
                 <Button
                   fullWidth
@@ -278,7 +283,7 @@ const AuthPage: React.FC = () => {
                     },
                   }}
                 >
-                  {isLoading ? 'Loading...' : 'Sign In'}
+                  {isLoading ? 'Загрузка...' : 'Войти'}
                 </Button>
                 <Button
                   fullWidth
@@ -298,11 +303,10 @@ const AuthPage: React.FC = () => {
                     },
                   }}
                 >
-                  {isLoading ? '...' : 'Guest'}
+                  {isLoading ? '...' : 'Гость'}
                 </Button>
               </Box>
             ) : (
-              // Режим регистрации: одна кнопка Sign Up
               <Button
                 fullWidth
                 variant="contained"
@@ -318,7 +322,7 @@ const AuthPage: React.FC = () => {
                   },
                 }}
               >
-                {isLoading ? 'Loading...' : 'Sign Up'}
+                {isLoading ? 'Загрузка...' : 'Зарегистрироваться'}
               </Button>
             )}
           </form>
@@ -338,21 +342,21 @@ const AuthPage: React.FC = () => {
               }}
             >
               {isLogin
-                ? "Don't have an account? Sign Up"
-                : 'Already have an account? Sign In'}
+                ? 'Нет аккаунта? Зарегистрируйтесь'
+                : 'Уже есть аккаунт? Войти'}
             </Link>
           </Box>
 
           {isLogin && (
             <Box mt={4} p={2} bgcolor="grey.900" borderRadius={2}>
               <Typography variant="body2" color="text.secondary" mb={1}>
-                Admin credentials:
+                Данные администратора:
               </Typography>
               <Typography variant="body2" color="text.primary">
                 Email: max@example.com
               </Typography>
               <Typography variant="body2" color="text.primary">
-                Password: 1234
+                Пароль: 1234
               </Typography>
             </Box>
           )}

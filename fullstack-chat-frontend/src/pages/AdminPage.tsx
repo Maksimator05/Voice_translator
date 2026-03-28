@@ -28,6 +28,7 @@ import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
 import DeleteIcon from '@mui/icons-material/Delete';
 import { useNavigate } from 'react-router-dom';
 import { adminApi } from '../api/admin';
+import SeoHead from '../components/seo/SeoHead';
 import { User, UserRole } from '../types/auth';
 import { useAppSelector } from '../hooks/useRedux';
 
@@ -100,7 +101,13 @@ const AdminPage: React.FC = () => {
   };
 
   return (
-    <Box sx={{ minHeight: '100vh', backgroundColor: '#0f172a' }}>
+    <Box component="main" sx={{ minHeight: '100vh', backgroundColor: '#0f172a' }}>
+      <SeoHead
+        title="Admin workspace"
+        description="Protected administration section with user management."
+        canonicalPath="/admin"
+        robots="noindex,nofollow"
+      />
       {/* Header */}
       <Box sx={{
         backgroundColor: '#1e293b',
@@ -112,7 +119,7 @@ const AdminPage: React.FC = () => {
           <ArrowBackIcon />
         </IconButton>
         <AdminPanelSettingsIcon sx={{ color: '#EF4444' }} />
-        <Typography variant="h6" sx={{ color: '#f1f5f9', fontWeight: 600 }}>
+        <Typography component="h1" variant="h6" sx={{ color: '#f1f5f9', fontWeight: 600 }}>
           Панель администратора — Управление пользователями
         </Typography>
       </Box>

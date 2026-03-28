@@ -22,9 +22,13 @@ COPY . .
 # VITE_API_URL=/api — запросы идут через nginx-прокси на бэкенд
 ARG VITE_API_URL=/api
 ARG VITE_WS_URL=
+ARG VITE_SITE_URL=http://localhost:3000
+ARG VITE_SITE_NAME="Intelligent Meeting Analyzer"
 
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_WS_URL=$VITE_WS_URL
+ENV VITE_SITE_URL=$VITE_SITE_URL
+ENV VITE_SITE_NAME=$VITE_SITE_NAME
 
 RUN npm run build
 

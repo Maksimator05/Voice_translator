@@ -5,6 +5,8 @@
 
 FROM python:3.11-slim
 
+ARG TORCH_CPU_VERSION=2.5.1+cpu
+
 # Системные зависимости: ffmpeg для аудио, gcc для Cython-пакетов
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -15,7 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Устанавливаем CPU-only torch отдельно (значительно меньше GPU-версии)
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir "torch==${TORCH_CPU_VERSION}" --index-url https://download.pytorch.org/whl/cpu
 
 # Устанавливаем остальные зависимости
 COPY requirements.txt .

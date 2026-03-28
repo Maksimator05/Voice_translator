@@ -4,13 +4,14 @@ import tempfile
 import os
 import uuid as _uuid
 
-from fastapi import FastAPI, Depends, Query, status, UploadFile, File, HTTPException, Form
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from typing import List, Optional, Dict
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Depends, Query, status, UploadFile, File, HTTPException, Form, Request
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.models.chat_models import ChatMessage
 from app.models.file_models import FileAttachment
@@ -43,8 +44,14 @@ from app.models.chat_schemas import (
     DeleteChatResponse,
 )
 from app.models.file_schemas import FileAttachmentResponse, FileDownloadResponse
+from app.models.external_resource_schemas import ExternalResourceSearchResponse
 from app.services.llm_processor import LLMProcessor
 from app.services.audio_processor import audio_processor
+from app.services.external_resources_service import (
+    external_resources_service,
+    ExternalAPIError,
+    ExternalRateLimitError,
+)
 from app.services.storage_service import storage_service
 
 logging.basicConfig(level=logging.INFO)
@@ -64,13 +71,61 @@ long_polling_connections: Dict[int, List[asyncio.Queue]] = {}
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=list({settings.SITE_URL, "http://localhost:5173", "http://localhost:3000"}),
     allow_methods=["*"],
     allow_credentials=True,
     allow_headers=["*"],
 )
 
 llm_processor = LLMProcessor()
+PUBLIC_SITEMAP_ROUTES = (
+    ("/", "weekly", "1.0"),
+    ("/resources", "weekly", "0.8"),
+)
+
+
+def build_absolute_site_url(path: str) -> str:
+    return f"{settings.SITE_URL}{path}"
+
+
+def build_sitemap_xml() -> str:
+    lastmod = datetime.now(timezone.utc).date().isoformat()
+    xml_parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+
+    for path, changefreq, priority in PUBLIC_SITEMAP_ROUTES:
+        xml_parts.extend(
+            [
+                "  <url>",
+                f"    <loc>{build_absolute_site_url(path)}</loc>",
+                f"    <lastmod>{lastmod}</lastmod>",
+                f"    <changefreq>{changefreq}</changefreq>",
+                f"    <priority>{priority}</priority>",
+                "  </url>",
+            ]
+        )
+
+    xml_parts.append("</urlset>")
+    return "\n".join(xml_parts)
+
+
+def build_robots_txt() -> str:
+    return "\n".join(
+        [
+            "User-agent: *",
+            "Allow: /",
+            "Disallow: /api/",
+            "Disallow: /admin",
+            "Disallow: /chats",
+            "Disallow: /sign-in",
+            "Disallow: /sign-up",
+            "Disallow: /auth",
+            "Disallow: /forbidden",
+            f"Sitemap: {build_absolute_site_url('/sitemap.xml')}",
+        ]
+    )
 
 
 @app.on_event("startup")
@@ -642,6 +697,31 @@ async def delete_file(
 
 # ==================== ЭНДПОИНТЫ АДМИНИСТРАТОРА ====================
 
+@app.get("/api/resources/books", response_model=ExternalResourceSearchResponse)
+async def search_external_books(
+    request: Request,
+    query: Optional[str] = Query(
+        None,
+        description="Search query for public learning resources",
+    ),
+    limit: int = Query(6, ge=1, le=10),
+):
+    """Public endpoint that normalizes external learning resources."""
+    requester_id = request.client.host if request.client else "anonymous"
+
+    try:
+        return await asyncio.to_thread(
+            external_resources_service.search_books,
+            query,
+            requester_id,
+            limit,
+        )
+    except ExternalRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except ExternalAPIError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
 @app.get("/api/admin/users", response_model=List[UserResponse])
 async def get_all_users(
     current_user: User = Depends(require_admin),
@@ -813,7 +893,22 @@ async def root():
         "message": "Intelligent Meeting Analyzer API с RBAC работает!",
         "version": settings.VERSION,
         "status": "active",
+        "site_url": settings.SITE_URL,
+        "seo": {
+            "robots": build_absolute_site_url("/robots.txt"),
+            "sitemap": build_absolute_site_url("/sitemap.xml"),
+        },
     }
+
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots_txt():
+    return PlainTextResponse(build_robots_txt())
+
+
+@app.get("/sitemap.xml")
+async def sitemap_xml():
+    return Response(content=build_sitemap_xml(), media_type="application/xml")
 
 
 @app.get("/api/health")
@@ -831,7 +926,7 @@ async def health_check():
 
 
 @app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
+async def http_exception_handler(request: Request, exc: HTTPException):
     logger.warning(f"HTTP ошибка {exc.status_code}: {exc.detail}")
     return JSONResponse(
         status_code=exc.status_code,
@@ -839,8 +934,24 @@ async def http_exception_handler(request, exc):
     )
 
 
+@app.exception_handler(StarletteHTTPException)
+async def starlette_http_exception_handler(
+    request: Request,
+    exc: StarletteHTTPException,
+):
+    logger.warning(
+        "Routing HTTP error %s for path %s",
+        exc.status_code,
+        request.url.path,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail, "status_code": exc.status_code},
+    )
+
+
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
+async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Необработанное исключение: {exc}")
     return JSONResponse(
         status_code=500,

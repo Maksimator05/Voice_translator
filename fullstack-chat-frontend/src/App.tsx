@@ -1,104 +1,106 @@
-// src/App.tsx — обновлённая версия с ролевыми маршрутами
-
-import React, { useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { Provider, useDispatch, useSelector } from 'react-redux';
-import { ThemeProvider, CssBaseline } from '@mui/material';
+import { Suspense, lazy, useEffect } from 'react';
+import type { ReactElement } from 'react';
+import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-dom';
+import { Provider } from 'react-redux';
+import { CssBaseline, ThemeProvider } from '@mui/material';
 import { store } from './store';
-import AuthPage from './pages/AuthPage';
-import ChatsPage from './pages/Chats';
-import AdminPage from './pages/AdminPage';
+import { useAppDispatch, useAppSelector } from './hooks/useRedux';
+import { fetchCurrentUser } from './store/authSlice';
 import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import { longPollingService } from './api/longpolling';
 import { darkTheme } from './theme';
-import { fetchCurrentUser } from './store/authSlice';
+import PageLoader from './components/ui/PageLoader';
 
-/** Редирект на /auth если нет токена */
-const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const token = useSelector((state: any) => state.auth.token);
-  if (token) return <Navigate to="/chats" replace />;
-  return <>{children}</>;
-};
+const LandingPage = lazy(() => import('./pages/LandingPage'));
+const ResourcesPage = lazy(() => import('./pages/ResourcesPage'));
+const AuthPage = lazy(() => import('./pages/AuthPage'));
+const ChatsPage = lazy(() => import('./pages/Chats'));
+const AdminPage = lazy(() => import('./pages/AdminPage'));
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
+const ForbiddenPage = lazy(() => import('./pages/ForbiddenPage'));
+
+function PublicOnlyRoute({ children }: { children: ReactElement }) {
+  const token = useAppSelector((state) => state.auth.token);
+
+  if (token) {
+    return <Navigate to="/chats" replace />;
+  }
+
+  return children;
+}
 
 function AppRoutes() {
-  const { user, token } = useSelector((state: any) => state.auth);
-  const dispatch = useDispatch();
+  const dispatch = useAppDispatch();
+  const { user, token } = useAppSelector((state) => state.auth);
 
-  // Восстановление сессии из localStorage
   useEffect(() => {
     const storedToken = localStorage.getItem('access_token');
     const storedUser = localStorage.getItem('user');
-    if (storedToken && !token) {
-      try {
-        if (storedUser) dispatch(fetchCurrentUser() as any);
-      } catch (e) {
-        localStorage.removeItem('access_token');
-        localStorage.removeItem('user');
-      }
+
+    if (storedToken && storedUser && !token) {
+      void dispatch(fetchCurrentUser());
     }
   }, [dispatch, token]);
 
-  // Управление Long Polling
   useEffect(() => {
     if (user?.id && token) {
       longPollingService.startPolling(user.id);
-    } else {
-      longPollingService.stopPolling();
+      return () => {
+        longPollingService.stopPolling();
+      };
     }
-    return () => longPollingService.stopPolling();
-  }, [user?.id, token]);
+
+    longPollingService.stopPolling();
+    return undefined;
+  }, [token, user?.id]);
 
   return (
     <ThemeProvider theme={darkTheme}>
       <CssBaseline />
-      <Routes>
-        {/* Публичный маршрут — только для неавторизованных */}
-        <Route
-          path="/auth"
-          element={
-            <PublicRoute>
-              <AuthPage />
-            </PublicRoute>
-          }
-        />
-
-        {/* Приватный маршрут — любой авторизованный */}
-        <Route
-          path="/chats"
-          element={
-            <ProtectedRoute>
-              <ChatsPage />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* Административный маршрут — только admin */}
-        <Route
-          path="/admin"
-          element={
-            <ProtectedRoute allowedRoles={['admin']}>
-              <AdminPage />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route path="/" element={<Navigate to="/chats" replace />} />
-        <Route path="*" element={<Navigate to="/chats" replace />} />
-      </Routes>
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/resources" element={<ResourcesPage />} />
+          <Route
+            path="/auth"
+            element={
+              <PublicOnlyRoute>
+                <AuthPage />
+              </PublicOnlyRoute>
+            }
+          />
+          <Route path="/sign-in" element={<Navigate to="/auth" replace />} />
+          <Route path="/sign-up" element={<Navigate to="/auth" replace />} />
+          <Route path="/forbidden" element={<ForbiddenPage />} />
+          <Route
+            path="/chats"
+            element={
+              <ProtectedRoute>
+                <ChatsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+      </Suspense>
     </ThemeProvider>
   );
 }
 
-function App() {
+export default function App() {
   return (
     <Provider store={store}>
       <Router>
-        <div className="App">
-          <AppRoutes />
-        </div>
+        <AppRoutes />
       </Router>
     </Provider>
   );
 }
-
-export default App;

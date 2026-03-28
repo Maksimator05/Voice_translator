@@ -10,6 +10,12 @@ class Settings:
     APP_NAME: str = "Intelligent Meeting Analyzer"
     VERSION: str = "2.0.0"
     DESCRIPTION: str = "AI система для структурированного анализа встреч и лекций"
+    SITE_NAME: str = os.getenv("SITE_NAME", "Intelligent Meeting Analyzer")
+    SITE_URL: str = os.getenv("SITE_URL", "http://localhost:3000").rstrip("/")
+    DEFAULT_OG_IMAGE: str = os.getenv(
+        "DEFAULT_OG_IMAGE",
+        "http://localhost:3000/og-cover.svg",
+    )
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     DEBUG: bool = True
@@ -72,6 +78,32 @@ class Settings:
     S3_ACCESS_KEY: str = os.getenv("S3_ACCESS_KEY", "minioadmin")
     S3_SECRET_KEY: str = os.getenv("S3_SECRET_KEY", "minioadmin")
     S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "voice-translator")
+
+    # External resources API
+    GOOGLE_BOOKS_API_URL: str = os.getenv(
+        "GOOGLE_BOOKS_API_URL",
+        "https://www.googleapis.com/books/v1/volumes",
+    )
+    GOOGLE_BOOKS_API_KEY: str = os.getenv("GOOGLE_BOOKS_API_KEY", "")
+    EXTERNAL_RESOURCES_DEFAULT_QUERY: str = os.getenv(
+        "EXTERNAL_RESOURCES_DEFAULT_QUERY",
+        "meeting productivity",
+    )
+    EXTERNAL_RESOURCES_CONNECT_TIMEOUT_SECONDS: float = float(
+        os.getenv("EXTERNAL_RESOURCES_CONNECT_TIMEOUT_SECONDS", "3")
+    )
+    EXTERNAL_RESOURCES_READ_TIMEOUT_SECONDS: float = float(
+        os.getenv("EXTERNAL_RESOURCES_READ_TIMEOUT_SECONDS", "8")
+    )
+    EXTERNAL_RESOURCES_MAX_RETRIES: int = int(
+        os.getenv("EXTERNAL_RESOURCES_MAX_RETRIES", "2")
+    )
+    EXTERNAL_RESOURCES_CACHE_TTL_SECONDS: int = int(
+        os.getenv("EXTERNAL_RESOURCES_CACHE_TTL_SECONDS", "900")
+    )
+    EXTERNAL_RESOURCES_MIN_INTERVAL_SECONDS: float = float(
+        os.getenv("EXTERNAL_RESOURCES_MIN_INTERVAL_SECONDS", "1.5")
+    )
 
     @property
     def allowed_content_types(self) -> List[str]:

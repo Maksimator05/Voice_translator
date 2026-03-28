@@ -43,6 +43,9 @@ services:
       # LM Studio запущен на хост-машине → host.docker.internal
       LM_STUDIO_URL: http://host.docker.internal:1234
       LM_STUDIO_MODEL: ${LM_STUDIO_MODEL:-local-model}
+      SITE_NAME: ${SITE_NAME:-Intelligent Meeting Analyzer}
+      SITE_URL: ${SITE_URL:-http://localhost:3000}
+      DEFAULT_OG_IMAGE: ${DEFAULT_OG_IMAGE:-http://localhost:3000/og-cover.svg}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in .env}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
@@ -50,6 +53,13 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-voice-translator}
+      GOOGLE_BOOKS_API_KEY: ${GOOGLE_BOOKS_API_KEY:-}
+      EXTERNAL_RESOURCES_DEFAULT_QUERY: ${EXTERNAL_RESOURCES_DEFAULT_QUERY:-meeting productivity}
+      EXTERNAL_RESOURCES_CONNECT_TIMEOUT_SECONDS: ${EXTERNAL_RESOURCES_CONNECT_TIMEOUT_SECONDS:-3}
+      EXTERNAL_RESOURCES_READ_TIMEOUT_SECONDS: ${EXTERNAL_RESOURCES_READ_TIMEOUT_SECONDS:-8}
+      EXTERNAL_RESOURCES_MAX_RETRIES: ${EXTERNAL_RESOURCES_MAX_RETRIES:-2}
+      EXTERNAL_RESOURCES_CACHE_TTL_SECONDS: ${EXTERNAL_RESOURCES_CACHE_TTL_SECONDS:-900}
+      EXTERNAL_RESOURCES_MIN_INTERVAL_SECONDS: ${EXTERNAL_RESOURCES_MIN_INTERVAL_SECONDS:-1.5}
     # Нужно на Linux (на macOS/Windows Docker Desktop host.docker.internal уже доступен)
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -74,6 +84,8 @@ services:
       args:
         # Относительный путь → nginx проксирует /api → backend:8000
         VITE_API_URL: /api
+        VITE_SITE_URL: ${VITE_SITE_URL:-http://localhost:3000}
+        VITE_SITE_NAME: ${VITE_SITE_NAME:-Intelligent Meeting Analyzer}
     ports:
       - "3000:80"
     depends_on:
