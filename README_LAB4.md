@@ -1,224 +1,192 @@
-# Лабораторная работа №4
+# SEO-оптимизация — Памятка для защиты лабораторной
 
-## Тема
-SEO-оптимизация веб-приложения и интеграция стороннего API в существующий MVP `Intelligent Meeting Analyzer`.
+## Обзор
 
-## Что было реализовано
-
-### 1. Анализ страниц для индексации
-
-#### Индексируемые страницы
-- `/` — публичный landing page с описанием продукта
-- `/resources` — публичная страница с внешними материалами по митингам, продуктивности и фасилитации
-
-#### Страницы, исключенные из индексации
-- `/sign-in`
-- `/sign-up`
-- `/auth` (редирект на sign-in)
-- `/chats`
-- `/admin`
-- `/forbidden`
-- `/api/*`
-
-#### Приоритетные страницы для выдачи
-- `/`
-- `/resources`
+В проект добавлена базовая SEO-оптимизация на двух уровнях:
+- **Backend (FastAPI)** — `app/main.py`, `app/config.py`
+- **Frontend (HTML)** — `fullstack-chat-frontend/index.html`
 
 ---
 
-### 2. SEO-оптимизация frontend
+## 1. Backend — `app/config.py`
 
-#### Что добавлено
-- семантические публичные страницы с `h1`, `h2`, `h3`, секциями и article-блоками
-- отдельные человеко-понятные маршруты:
-  - `/`
-  - `/resources`
-  - `/sign-in`
-  - `/sign-up`
-- динамические meta-теги через компонент `SeoHead`
-- `canonical` для ключевых страниц
-- Open Graph / Twitter meta
-- JSON-LD:
-  - `SoftwareApplication` для главной
-  - `CollectionPage` + `ItemList` для страницы ресурсов
-- `noindex,nofollow` для закрытых и служебных страниц
-- lazy loading страниц и тяжелых компонентов
-- lazy loading изображений карточек ресурсов
+Добавлены три новые настройки, связанные с SEO:
 
-#### Основные frontend-файлы
-- `fullstack-chat-frontend/src/App.tsx` — новый роутинг и lazy loading страниц
-- `fullstack-chat-frontend/src/components/seo/SeoHead.tsx` — управление title/meta/canonical/OG/JSON-LD
-- `fullstack-chat-frontend/src/components/layout/PublicLayout.tsx` — публичный layout
-- `fullstack-chat-frontend/src/pages/LandingPage.tsx` — индексируемая главная страница
-- `fullstack-chat-frontend/src/pages/ResourcesPage.tsx` — публичная страница внешних ресурсов
-- `fullstack-chat-frontend/src/pages/AuthPage.tsx` — страницы входа/регистрации с `noindex`
-- `fullstack-chat-frontend/src/pages/NotFoundPage.tsx` — клиентская страница 404
-- `fullstack-chat-frontend/src/pages/ForbiddenPage.tsx` — клиентская страница access denied
-- `fullstack-chat-frontend/src/pages/Chats.tsx` — добавлен `noindex`, lazy loading вложений
-- `fullstack-chat-frontend/src/pages/AdminPage.tsx` — добавлен `noindex`
-- `fullstack-chat-frontend/index.html` — базовые meta-теги по умолчанию
-- `fullstack-chat-frontend/public/*` — favicon, OG cover, hero illustration
+| Параметр | Значение по умолчанию | Назначение |
+|---|---|---|
+| `SITE_NAME` | `"Intelligent Meeting Analyzer"` | Название сайта для мета-тегов |
+| `SITE_URL` | `http://localhost:3000` | Базовый URL — используется для формирования абсолютных ссылок в sitemap и robots.txt |
+| `DEFAULT_OG_IMAGE` | `http://localhost:3000/og-cover.svg` | Путь к изображению для Open Graph (превью в соцсетях) |
+
+Значения берутся из переменных окружения, что позволяет менять их без изменения кода.
 
 ---
 
-### 3. Техническая SEO-поддержка на backend и инфраструктуре
+## 2. Backend — `app/main.py`
 
-#### Что добавлено
-- `GET /robots.txt`
-- `GET /sitemap.xml`
-- реальные `404` для неизвестных маршрутов в production nginx-конфиге
-- обработчик `StarletteHTTPException`, чтобы backend корректно отдавал 404/403 для API и роутинга
+### 2.1. Вспомогательные функции
 
-#### Основные backend-файлы
-- `app/main.py`
-  - генерация `robots.txt`
-  - генерация `sitemap.xml`
-  - обработка HTTP-ошибок
-- `fullstack-chat-frontend/nginx.conf`
-  - проксирование `/robots.txt` и `/sitemap.xml` в backend
-  - явный список SPA-маршрутов
-  - настоящие 404 для несуществующих URL
+```python
+def build_absolute_site_url(path: str) -> str:
+    return f"{settings.SITE_URL}{path}"
+```
+Формирует полный URL из базового адреса сайта и относительного пути. Используется в sitemap и robots.txt.
 
 ---
 
-### 4. Оптимизация производительности
+### 2.2. Sitemap (`/sitemap.xml`)
 
-#### Реализовано
-- `React.lazy` + `Suspense` для:
-  - страниц
-  - `FileUpload`
-  - `FileAttachments`
-- дебаунс клиентских запросов на странице ресурсов
-- `useDeferredValue` для уменьшения лишних запросов при вводе
-- сборка разбивается на чанки, что видно по `vite build`
-- кэширование статических ассетов в `nginx.conf`
-- `loading="lazy"` и `decoding="async"` для карточек ресурсов
+```python
+PUBLIC_SITEMAP_ROUTES = (
+    ("/", "weekly", "1.0"),
+    ("/resources", "weekly", "0.8"),
+)
+```
 
----
+Список публичных маршрутов сайта с параметрами:
+- **changefreq** — как часто обновляется страница (`weekly`)
+- **priority** — приоритет индексации (от 0.0 до 1.0)
 
-### 5. Интеграция стороннего API
+Функция `build_sitemap_xml()` генерирует XML по стандарту [sitemaps.org](https://www.sitemaps.org/schemas/sitemap/0.9), включая:
+- `<loc>` — полный URL страницы
+- `<lastmod>` — дата последнего изменения (текущая дата)
+- `<changefreq>` — частота обновления
+- `<priority>` — приоритет
 
-#### Выбранный сценарий
-Публичная страница `/resources` показывает книги и материалы по темам вроде:
-- meeting productivity
-- facilitation
-- speech recognition
-- note taking
-
-Источник данных: Google Books API.
-
-#### Что реализовано в серверном слое
-- server-side adapter/service
-- таймауты
-- повторные попытки
-- простое ограничение частоты запросов
-- кэширование ответов
-- нормализация ответа в единый формат для frontend
-- конфигурация через env
-
-#### Основные файлы
-- `app/services/external_resources_service.py` — адаптер внешнего API
-- `app/models/external_resource_schemas.py` — нормализованные схемы ответа
-- `app/main.py` — публичный endpoint `/api/resources/books`
-
-#### Что делает backend
-- принимает `query` и `limit`
-- идет во внешний API
-- нормализует поля:
-  - `title`
-  - `authors`
-  - `description`
-  - `resource_url`
-  - `thumbnail_url`
-  - `published_date`
-  - `categories`
-- при проблемах отдает понятные статусы:
-  - `429` — слишком частые запросы
-  - `503` — недоступность внешнего API
+**Эндпоинт:** `GET /sitemap.xml` — возвращает XML с Content-Type `application/xml`.
 
 ---
 
-### 6. Клиентская часть внешней интеграции
+### 2.3. Robots.txt (`/robots.txt`)
 
-#### На странице `/resources` реализовано
-- загрузка данных через backend endpoint
-- состояние загрузки
-- состояние ошибки
-- пустой результат
-- graceful degradation:
-  - если внешний API недоступен, показываются локально подготовленные fallback-ресурсы
+Функция `build_robots_txt()` возвращает файл в формате:
 
-#### Основные файлы
-- `fullstack-chat-frontend/src/api/resources.ts`
-- `fullstack-chat-frontend/src/types/resources.ts`
-- `fullstack-chat-frontend/src/pages/ResourcesPage.tsx`
+```
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /chats
+Disallow: /sign-in
+Disallow: /sign-up
+Disallow: /auth
+Disallow: /forbidden
+Sitemap: https://<SITE_URL>/sitemap.xml
+```
 
----
+**Логика:**
+- Все боты (`User-agent: *`) допускаются на публичные страницы
+- Закрыты от индексации: API, административные разделы, авторизационные страницы, личные данные пользователей
+- В конце — ссылка на sitemap для поисковых роботов
 
-## Переменные окружения
-
-Добавлены/используются:
-- `SITE_NAME`
-- `SITE_URL`
-- `DEFAULT_OG_IMAGE`
-- `VITE_SITE_URL`
-- `VITE_SITE_NAME`
-- `GOOGLE_BOOKS_API_KEY`
-- `EXTERNAL_RESOURCES_DEFAULT_QUERY`
-- `EXTERNAL_RESOURCES_CONNECT_TIMEOUT_SECONDS`
-- `EXTERNAL_RESOURCES_READ_TIMEOUT_SECONDS`
-- `EXTERNAL_RESOURCES_MAX_RETRIES`
-- `EXTERNAL_RESOURCES_CACHE_TTL_SECONDS`
-- `EXTERNAL_RESOURCES_MIN_INTERVAL_SECONDS`
-
-Файлы:
-- `.env`
-- `docker-compose.yml`
-- `docker-compose.prod.yml`
-- `fullstack-chat-frontend/Dockerfile`
+**Эндпоинт:** `GET /robots.txt` — возвращает plain text.
 
 ---
 
-## Как проверить вручную
+### 2.4. Корневой эндпоинт `/`
 
-### SEO
-1. Открыть `/`
-2. Открыть `/resources`
-3. Проверить `title`, `description`, `canonical`, `og:*`
-4. Открыть `/sign-in` и `/sign-up` и проверить `robots=noindex,nofollow`
-5. Проверить:
-   - `http://localhost:3000/robots.txt`
-   - `http://localhost:3000/sitemap.xml`
+В ответ добавлен SEO-блок:
 
-### Индексация и маршруты
-1. Проверить, что `/chats` и `/admin` являются закрытыми
-2. Проверить, что несуществующий URL в production nginx возвращает 404
+```json
+{
+  "seo": {
+    "robots": "https://<SITE_URL>/robots.txt",
+    "sitemap": "https://<SITE_URL>/sitemap.xml"
+  }
+}
+```
 
-### Сторонний API
-1. Открыть `/resources`
-2. Ввести запрос
-3. Проверить загрузку карточек
-4. Проверить, что при ошибке API показывается warning и fallback-контент
+Это позволяет API-клиентам программно узнать ссылки на SEO-файлы.
 
 ---
 
-## Что было проверено мной
+## 3. Frontend — `fullstack-chat-frontend/index.html`
 
-### Успешно
-- Python-патчи проверены через `py_compile`
-- frontend типы проверены через `tsc --noEmit`
-- production frontend сборка прошла через `npm run build`
+### 3.1. Базовые мета-теги
 
-### Не удалось полноценно прогнать
-- `pytest` не был установлен в доступном Python-окружении текущей сессии, поэтому существующие backend-тесты не запускались
+```html
+<meta name="description" content="Intelligent Meeting Analyzer помогает командам расшифровывать встречи..." />
+<meta name="robots" content="index,follow" />
+<meta name="theme-color" content="#0f172a" />
+```
+
+| Тег | Назначение |
+|---|---|
+| `description` | Описание страницы в поисковой выдаче (сниппет) |
+| `robots` | Разрешение поисковикам индексировать и переходить по ссылкам |
+| `theme-color` | Цвет адресной строки браузера на мобильных устройствах |
 
 ---
 
-## Краткий итог
+### 3.2. Open Graph (OG) — превью в соцсетях
 
-В проект добавлен публичный SEO-слой без изменения основной бизнес-логики чатов и авторизации. Появились индексируемые страницы, техническая SEO-поддержка (`robots.txt`, `sitemap.xml`, canonical, JSON-LD, OG), а также серверная и клиентская интеграция внешнего API с обработкой ошибок и graceful degradation.
-### Актуальное примечание по маршрутам
+```html
+<meta property="og:title" content="Intelligent Meeting Analyzer" />
+<meta property="og:description" content="Расшифровывайте встречи, фиксируйте решения..." />
+<meta property="og:type" content="website" />
+<meta property="og:image" content="/og-cover.svg" />
+```
 
-- Основной маршрут авторизации в финальном варианте: `/auth`
-- `/sign-in` и `/sign-up` сохранены как совместимые redirect-маршруты на `/auth`
-- Для ручной проверки `noindex` надежнее открывать именно `/auth`
+Open Graph — стандарт разметки, который используют Facebook, VK, Telegram, LinkedIn и другие соцсети для формирования карточки при публикации ссылки.
+
+| Тег | Назначение |
+|---|---|
+| `og:title` | Заголовок карточки |
+| `og:description` | Описание в карточке |
+| `og:type` | Тип контента (`website`) |
+| `og:image` | Превью-изображение карточки |
+
+---
+
+### 3.3. Twitter Card
+
+```html
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content="/og-cover.svg" />
+```
+
+Аналог Open Graph для Twitter/X. Тип `summary_large_image` — большое горизонтальное изображение в карточке твита.
+
+---
+
+### 3.4. Иконка сайта
+
+```html
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+```
+
+SVG-фавиконка — современный формат, масштабируется без потери качества на любых экранах.
+
+---
+
+## Итоговая структура SEO
+
+```
+Проект
+├── Backend (FastAPI)
+│   ├── GET /robots.txt          ← Управление индексацией
+│   ├── GET /sitemap.xml         ← Карта сайта для поисковиков
+│   ├── GET /                    ← Ссылки на SEO-файлы в ответе API
+│   └── app/config.py            ← SITE_URL, SITE_NAME, DEFAULT_OG_IMAGE
+└── Frontend (HTML)
+    └── index.html
+        ├── <meta name="description">   ← Сниппет в поиске
+        ├── <meta name="robots">        ← Директивы для ботов
+        ├── <meta name="theme-color">   ← Мобильный браузер
+        ├── og:title / og:description   ← Превью в соцсетях
+        ├── og:image                    ← Картинка карточки
+        ├── twitter:card                ← Twitter/X карточка
+        └── favicon.svg                 ← Иконка сайта
+```
+
+---
+
+## Как проверить
+
+| Что проверить | Как |
+|---|---|
+| Sitemap | `GET http://localhost:8000/sitemap.xml` |
+| Robots.txt | `GET http://localhost:8000/robots.txt` |
+| Open Graph | [opengraph.xyz](https://opengraph.xyz) или расширение для браузера |
+| Twitter Card | [cards-dev.twitter.com/validator](https://cards-dev.twitter.com/validator) |
+| Мета-теги | DevTools → Elements → `<head>` |

@@ -39,8 +39,6 @@ from app.models.chat_schemas import (
     ChatSessionResponse,
     ChatMessageCreate,
     ChatMessageResponse,
-    ChatSessionListResponse,
-    PaginatedResponse,
     DeleteChatResponse,
 )
 from app.models.file_schemas import FileAttachmentResponse, FileDownloadResponse
