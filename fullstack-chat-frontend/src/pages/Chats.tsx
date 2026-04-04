@@ -54,7 +54,7 @@ import { fetchChats, createChat, askAI, fetchChat, deleteChat } from '../store/c
 import { longPollingService } from '../api/longpolling';
 import { useRBAC, GUEST_TRANSCRIPTION_LIMIT } from '../hooks/useRBAC';
 import type { Chat, Message } from '../types';
-import ChatFilters, { type FilterState } from '../components/chat/ChatFilters';
+import ChatFilters from '../components/chat/ChatFilters';
 import SeoHead from '../components/seo/SeoHead';
 
 const FileUpload = lazy(() => import('../components/chat/FileUpload'));
@@ -138,6 +138,9 @@ const ChatsPage: React.FC = () => {
         handleSelectChat(typedChats[0]);
       }
     }
+    // selectedChat is intentionally excluded to avoid re-selecting a chat
+    // after every message/store refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeChats]);
 
   useEffect(() => {
@@ -193,6 +196,8 @@ const ChatsPage: React.FC = () => {
 
   useEffect(() => {
     if (messages.length > 0) scrollToBottom();
+    // scrollToBottom is stable for the lifecycle of this screen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages]);
 
   const scrollToBottom = useCallback(() => {
@@ -485,7 +490,7 @@ const ChatsPage: React.FC = () => {
   // With server-side filtering active, all chats in store are already filtered
   const filteredChats = chats;
 
-  const handleFiltersChange = (_filters: FilterState) => {
+  const handleFiltersChange = () => {
     setCurrentPage(1);
     // URL params are already updated by ChatFilters; the searchParams change
     // triggers the loadChats useEffect above.

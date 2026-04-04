@@ -1,46 +1,55 @@
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, Generic, List, Optional, TypeVar
+
 from fastapi import UploadFile
 from pydantic import BaseModel, Field
-from datetime import datetime
-from typing import Generic, List, Optional, Dict, Any, TypeVar
-from enum import Enum
 
 T = TypeVar("T")
+
 
 class SessionType(str, Enum):
     TEXT = "text"
     AUDIO = "audio"
     MEETING = "meeting"
 
+
 class MessageType(str, Enum):
     TEXT = "text"
     AUDIO_TRANSCRIPT = "audio"
 
+
 class ChatMessageBase(BaseModel):
-    content: str = Field(..., min_length=1, max_length=50000)  # 50k символов
+    content: str = Field(..., min_length=1, max_length=50000)
     role: str
-    message_type: MessageType = MessageType.TEXT  # Используйте Enum
+    message_type: MessageType = MessageType.TEXT
     audio_filename: Optional[str] = None
     audio_transcription: Optional[str] = None
+    audio_data: Optional[str] = None
+
 
 class ChatMessageCreate(ChatMessageBase):
-    audio_filename: Optional[str] = None
-    audio_transcription: Optional[str] = None
+    pass
+
 
 class ChatMessageResponse(ChatMessageBase):
     id: int
     chat_session_id: int
     tokens_used: int = 0
     created_at: datetime
-    audio_filename: Optional[str] = None  # 🆕
-    audio_transcription: Optional[str] = None  # 🆕
+    audio_filename: Optional[str] = None
+    audio_transcription: Optional[str] = None
     audio_analysis: Optional[Dict[str, Any]] = None
+
 
 class ChatSessionBase(BaseModel):
     title: str = "Новый чат"
     session_type: SessionType = SessionType.TEXT
 
+
 class ChatSessionCreate(ChatSessionBase):
     pass
+
 
 class ChatSessionResponse(ChatSessionBase):
     id: int
@@ -49,6 +58,7 @@ class ChatSessionResponse(ChatSessionBase):
     updated_at: datetime
     is_active: bool = True
     messages: List[ChatMessageResponse] = []
+
 
 class ChatSessionListResponse(BaseModel):
     id: int
@@ -59,10 +69,11 @@ class ChatSessionListResponse(BaseModel):
     last_message: Optional[str] = None
     message_count: int = 0
 
+
 class ChatAskRequest(BaseModel):
-    """Схема для запроса к AI в чате"""
-    message: str = Field(..., min_length=1, max_length=50000)  # 50k символов
+    message: str = Field(..., min_length=1, max_length=50000)
     audio_data: Optional[UploadFile] = None
+
 
 class DeleteChatResponse(BaseModel):
     success: bool

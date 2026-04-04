@@ -43,8 +43,13 @@ export const RegisterForm: React.FC<{ onToggle: () => void }> = ({ onToggle }) =
     },
     validationSchema,
     onSubmit: async (values) => {
-      const { confirmPassword, ...credentials } = values;
-      await dispatch(register(credentials));
+      await dispatch(
+        register({
+          username: values.username,
+          email: values.email,
+          password: values.password,
+        })
+      );
     },
   });
 

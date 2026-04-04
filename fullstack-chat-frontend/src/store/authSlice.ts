@@ -90,7 +90,7 @@ export const guestLogin = createAsyncThunk(
 
 export const logout = createAsyncThunk(
   'auth/logout',
-  async (_) => {
+  async () => {
     const refreshToken = localStorage.getItem('refresh_token') || '';
     try {
       // Отзываем refresh token на сервере

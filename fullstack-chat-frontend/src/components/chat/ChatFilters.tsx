@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React from 'react';
 import {
   Box,
   TextField,
@@ -52,21 +52,18 @@ const ChatFilters: React.FC<ChatFiltersProps> = ({ onFiltersChange }) => {
     sort_order: getParam('sort_order', 'desc'),
   };
 
-  const update = useCallback(
-    (patch: Partial<FilterState>) => {
-      const next = { ...filters, ...patch };
-      const params = new URLSearchParams();
-      if (next.search) params.set('search', next.search);
-      if (next.session_type) params.set('session_type', next.session_type);
-      if (next.date_from) params.set('date_from', next.date_from);
-      if (next.date_to) params.set('date_to', next.date_to);
-      if (next.sort_by !== 'created_at') params.set('sort_by', next.sort_by);
-      if (next.sort_order !== 'desc') params.set('sort_order', next.sort_order);
-      setSearchParams(params, { replace: true });
-      onFiltersChange?.(next);
-    },
-    [filters, setSearchParams, onFiltersChange],
-  );
+  const update = (patch: Partial<FilterState>) => {
+    const next = { ...filters, ...patch };
+    const params = new URLSearchParams();
+    if (next.search) params.set('search', next.search);
+    if (next.session_type) params.set('session_type', next.session_type);
+    if (next.date_from) params.set('date_from', next.date_from);
+    if (next.date_to) params.set('date_to', next.date_to);
+    if (next.sort_by !== 'created_at') params.set('sort_by', next.sort_by);
+    if (next.sort_order !== 'desc') params.set('sort_order', next.sort_order);
+    setSearchParams(params, { replace: true });
+    onFiltersChange?.(next);
+  };
 
   const handleClear = () => {
     setSearchParams(new URLSearchParams(), { replace: true });
