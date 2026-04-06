@@ -3,39 +3,39 @@
 ## Тема
 Комплексное тестирование клиентской и серверной частей веб-приложения `Intelligent Meeting Analyzer`.
 
-## Что было сделано
+## Что сделано
 
-В рамках лабораторной в проекте была собрана полноценная тестовая инфраструктура для backend и frontend, без изменения основной бизнес-логики MVP.
+В проекте собрана полноценная тестовая инфраструктура для backend и frontend без изменения бизнес-логики MVP.
 
 ### 1. Сформирована тестовая модель приложения
 
-Выделены критические пользовательские сценарии:
+Выделены критические сценарии:
 
 - регистрация, вход, выход, refresh-токены и восстановление сессии;
 - гостевой вход и переход в рабочий чат;
-- ролевой доступ `guest / user / admin`;
-- создание, чтение, фильтрация, сортировка, пагинация и удаление чатов;
-- отправка сообщений в чат и AI-запросов;
+- разграничение доступа по ролям `guest / user / admin`;
+- CRUD по чатам, фильтрация, сортировка и пагинация;
+- отправка сообщений и AI-запросов;
 - загрузка, получение и удаление файлов;
 - работа со сторонним API публичных материалов;
-- корректная реакция UI на загрузку, ошибки и недоступность внешнего сервиса.
+- корректная реакция UI на loading / empty / error / session expired.
 
-Ключевые бизнес-правила и ограничения:
+Зафиксированы ключевые ограничения:
 
-- `guest` не может создавать чаты и имеет ограниченный сценарий использования;
-- `user` может работать только со своими чатами и файлами;
-- `admin` имеет доступ к админским endpoint’ам и управлению пользователями;
+- `guest` не может создавать полноценные чаты и работает в ограниченном режиме;
+- `user` работает только со своими чатами и файлами;
+- `admin` имеет доступ к административным endpoint'ам;
 - refresh-токены ротируются и отзываются при logout;
-- файлы проходят валидацию по размеру и MIME-типу;
-- внешний API должен обрабатываться через серверный адаптер с нормализацией и защитой от сбоев.
+- файлы проходят валидацию;
+- внешний API оборачивается серверным адаптером с нормализацией ответа.
 
-Области повышенного риска:
+Области риска:
 
-- аутентификация и refresh/logout;
-- разграничение доступа по ролям;
+- аутентификация и восстановление сессии;
+- роли и права доступа;
 - файловое хранилище;
-- интеграция со сторонним API;
-- фронтендовая обработка ошибок и session-expired сценариев.
+- внешняя интеграция;
+- клиентская обработка ошибок и недоступности backend.
 
 ## Что добавлено в проект
 
@@ -43,253 +43,187 @@
 
 Добавлены и настроены:
 
-- `pytest.ini` с разделением тестов по маркерам `unit`, `integration`, `e2e`;
-- `.coveragerc` с минимальным порогом backend coverage;
-- `requirements-test.txt` для отдельного тестового окружения;
-- `ruff.toml` для легкого backend-линтинга по критичным правилам;
-- новый `tests/conftest.py` с:
-  - изолированной in-memory SQLite БД;
-  - override `get_db`;
-  - отключением тяжелого startup-поведения;
-  - моками LLM/audio частей;
-  - фикстурами пользователей, ролей, чатов и storage.
+- [pytest.ini](C:\Users\maksimator\PycharmProjects\Voice_translator\pytest.ini)
+- [.coveragerc](C:\Users\maksimator\PycharmProjects\Voice_translator\.coveragerc)
+- [requirements-test.txt](C:\Users\maksimator\PycharmProjects\Voice_translator\requirements-test.txt)
+- [ruff.toml](C:\Users\maksimator\PycharmProjects\Voice_translator\ruff.toml)
+- [tests/conftest.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\conftest.py) с изолированной in-memory SQLite БД, override `get_db`, моками внешних зависимостей и фикстурами ролей/чатов/файлов.
 
 Добавлены backend-тесты:
 
-- `tests/unit/test_auth_service.py`
-- `tests/unit/test_chat_service.py`
-- `tests/unit/test_external_resources_service.py`
-- `tests/unit/test_storage_service.py`
-- `tests/integration/test_auth_endpoints.py`
-- `tests/integration/test_chat_endpoints.py`
-- `tests/integration/test_admin_endpoints.py`
-- `tests/integration/test_file_endpoints.py`
-- `tests/integration/test_external_resources_endpoints.py`
-- `tests/e2e/test_api_flows.py`
+- [tests/unit/test_auth_service.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\unit\test_auth_service.py)
+- [tests/unit/test_chat_service.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\unit\test_chat_service.py)
+- [tests/unit/test_external_resources_service.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\unit\test_external_resources_service.py)
+- [tests/unit/test_storage_service.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\unit\test_storage_service.py)
+- [tests/integration/test_auth_endpoints.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\integration\test_auth_endpoints.py)
+- [tests/integration/test_chat_endpoints.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\integration\test_chat_endpoints.py)
+- [tests/integration/test_admin_endpoints.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\integration\test_admin_endpoints.py)
+- [tests/integration/test_file_endpoints.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\integration\test_file_endpoints.py)
+- [tests/integration/test_external_resources_endpoints.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\integration\test_external_resources_endpoints.py)
+- [tests/e2e/test_api_flows.py](C:\Users\maksimator\PycharmProjects\Voice_translator\tests\e2e\test_api_flows.py)
 
 ### Frontend
 
 Добавлены и настроены:
 
-- `fullstack-chat-frontend/.eslintrc.cjs`
-- обновленный `fullstack-chat-frontend/package.json` со script-командами для тестов;
-- обновленный `fullstack-chat-frontend/vite.config.ts` с конфигом Vitest и coverage thresholds;
-- `fullstack-chat-frontend/src/test/setup.ts`
-- `fullstack-chat-frontend/src/test/test-utils.tsx`
+- [fullstack-chat-frontend/.eslintrc.cjs](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\.eslintrc.cjs)
+- [fullstack-chat-frontend/vite.config.ts](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\vite.config.ts) с Vitest coverage thresholds
+- [fullstack-chat-frontend/src/test/setup.ts](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\test\setup.ts)
+- [fullstack-chat-frontend/src/test/test-utils.tsx](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\test\test-utils.tsx)
 
 Добавлены frontend-тесты:
 
-- `fullstack-chat-frontend/src/test/unit/authSlice.unit.test.ts`
-- `fullstack-chat-frontend/src/test/unit/useRBAC.unit.test.tsx`
-- `fullstack-chat-frontend/src/test/integration/ProtectedRoute.integration.test.tsx`
-- `fullstack-chat-frontend/src/test/integration/AuthPage.integration.test.tsx`
-- `fullstack-chat-frontend/src/test/integration/ResourcesPage.integration.test.tsx`
-- `fullstack-chat-frontend/src/test/e2e/LandingPage.e2e.test.tsx`
+- [fullstack-chat-frontend/src/test/unit/authSlice.unit.test.ts](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\test\unit\authSlice.unit.test.ts)
+- [fullstack-chat-frontend/src/test/unit/useRBAC.unit.test.tsx](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\test\unit\useRBAC.unit.test.tsx)
+- [fullstack-chat-frontend/src/test/integration/ProtectedRoute.integration.test.tsx](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\test\integration\ProtectedRoute.integration.test.tsx)
+- [fullstack-chat-frontend/src/test/integration/AuthPage.integration.test.tsx](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\test\integration\AuthPage.integration.test.tsx)
+- [fullstack-chat-frontend/src/test/integration/ResourcesPage.integration.test.tsx](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\test\integration\ResourcesPage.integration.test.tsx)
+- [fullstack-chat-frontend/src/test/e2e/LandingPage.e2e.test.tsx](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\test\e2e\LandingPage.e2e.test.tsx)
 
 ## Точечные исправления в коде MVP
 
-Чтобы тесты отражали реальную работоспособность приложения, были внесены минимальные корректировки:
+В процессе внедрения тестирования исправлены реальные технические дефекты:
 
-- в `app/models/chat_schemas.py` добавлено поле `audio_data`, так как backend endpoint `/api/chats/{chat_id}/messages` уже ожидал его в логике;
+- в [app/models/chat_schemas.py](C:\Users\maksimator\PycharmProjects\Voice_translator\app\models\chat_schemas.py) добавлено поле `audio_data`, которое уже ожидалось backend-логикой;
 - исправлены lint-проблемы во frontend:
-  - `src/components/auth/RegisterForm.tsx`
-  - `src/components/chat/ChatFilters.tsx`
-  - `src/pages/Chats.tsx`
-  - `src/store/authSlice.ts`
+  - [RegisterForm.tsx](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\components\auth\RegisterForm.tsx)
+  - [ChatFilters.tsx](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\components\chat\ChatFilters.tsx)
+  - [Chats.tsx](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\pages\Chats.tsx)
+  - [authSlice.ts](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\src\store\authSlice.ts)
 
-Эти изменения не меняют бизнес-смысл приложения, а устраняют реальные технические дефекты и шум линтера.
+## Отдельно исправлено для стабильной CI/сборки
+
+После появления конфликта `npm ci` были синхронизированы frontend-зависимости:
+
+- в [package.json](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\package.json) зафиксирован совместимый стек `vite@^7.3.1` + `@vitejs/plugin-react@^4.7.0`;
+- обновлен [package-lock.json](C:\Users\maksimator\PycharmProjects\Voice_translator\fullstack-chat-frontend\package-lock.json);
+- повторно проверен чистый путь установки через `npm ci`.
+
+Для Docker стабилизирован frontend healthcheck:
+
+- в [docker-compose.yml](C:\Users\maksimator\PycharmProjects\Voice_translator\docker-compose.yml)
+- и [docker-compose.prod.yml](C:\Users\maksimator\PycharmProjects\Voice_translator\docker-compose.prod.yml)
+
+healthcheck переведен на shell-проверку наличия `index.html` и процесса `nginx`, чтобы не зависеть от наличия `wget` в базовом образе.
 
 ## Как устроено тестирование
 
-### Backend unit
+### Backend
 
-Проверяется изолированная логика сервисов:
+- unit: сервисный слой, токены, фильтрация, storage, внешний API;
+- integration: реальные FastAPI endpoint'ы, коды ответа, структура данных, ошибки доступа и валидации;
+- e2e: целостные API-сценарии пользователя и гостя.
 
-- refresh-token lifecycle;
-- фильтрация, пагинация и удаление чатов;
-- rate limit, retry, cache и normalizer внешнего API;
-- базовая валидация файлов.
+### Frontend
 
-### Backend integration
-
-Проверяются реальные FastAPI endpoint’ы:
-
-- auth endpoints;
-- chat endpoints;
-- admin endpoints;
-- file endpoints;
-- external resources endpoints.
-
-### Backend e2e
-
-Проверяются цельные бизнес-сценарии:
-
-- полный пользовательский путь от логина до CRUD и logout;
-- гостевой сценарий;
-- доступ к внешнему API и ограничения по ролям.
-
-### Frontend unit
-
-Проверяются:
-
-- `authSlice`;
-- `useRBAC`.
-
-### Frontend integration
-
-Проверяются:
-
-- защита маршрутов;
-- auth-экран;
-- публичная страница ресурсов;
-- состояния loading / error / graceful fallback.
-
-### Frontend e2e
-
-Проверяется сквозной UI-flow:
-
-- переход с публичной главной в чат через гостевой вход.
+- unit: `authSlice`, `useRBAC`;
+- integration: auth-экран, protected routes, публичная страница ресурсов, ошибки и fallback;
+- e2e: переход с публичной главной в рабочий чат через гостевой сценарий.
 
 ## Команды запуска и проверки
 
 ### Backend
 
-Установка test-зависимостей:
-
 ```powershell
 .\.venv1\Scripts\python.exe -m pip install -r requirements-test.txt
-```
-
-Линтер:
-
-```powershell
 .\.venv1\Scripts\python.exe -m ruff check app tests
-```
-
-Unit-тесты:
-
-```powershell
 .\.venv1\Scripts\python.exe -m pytest -m unit
-```
-
-Integration-тесты:
-
-```powershell
 .\.venv1\Scripts\python.exe -m pytest -m integration
-```
-
-E2E-тесты:
-
-```powershell
 .\.venv1\Scripts\python.exe -m pytest -m e2e
-```
-
-Полный backend-прогон с покрытием:
-
-```powershell
 .\.venv1\Scripts\python.exe -m pytest --cov=app --cov-report=term
 ```
 
 ### Frontend
 
-Установка зависимостей:
-
 ```powershell
 cd fullstack-chat-frontend
-npm install
-```
-
-Линтер:
-
-```powershell
+npm ci
 npm run lint
-```
-
-Unit:
-
-```powershell
 npm run test:unit
-```
-
-Integration:
-
-```powershell
 npm run test:integration
-```
-
-E2E:
-
-```powershell
 npm run test:e2e
-```
-
-Полный прогон:
-
-```powershell
 npm run test
-```
-
-Покрытие:
-
-```powershell
 npm run test:coverage
+npm run build
 ```
 
-Production build:
+### Docker
 
 ```powershell
-npm run build
+docker compose up --build -d backend frontend
+docker compose ps
+```
+
+Smoke-check:
+
+```powershell
+(Invoke-WebRequest http://localhost:8000/api/health -UseBasicParsing).Content
+(Invoke-WebRequest http://localhost:3000/ -UseBasicParsing).Content
+(Invoke-WebRequest http://localhost:3000/robots.txt -UseBasicParsing).Content
 ```
 
 ## Итоговые результаты проверки
 
 ### Backend
 
-- `ruff check app tests` — проходит;
-- `pytest` — `54 passed`;
-- итоговое покрытие backend: `50.84%`;
-- минимальный порог backend coverage: `50%`.
+- `ruff check app tests` проходит
+- `pytest --cov=app --cov-report=term` проходит
+- `54 passed`
+- итоговое backend coverage: `50.84%`
+- минимальный backend threshold: `50%`
 
 ### Frontend
 
-- `npm run lint` — проходит;
-- `npm run test` — `16 passed`;
-- `npm run build` — проходит;
-- покрытие frontend:
-  - statements: `90.92%`
-  - lines: `90.92%`
-  - branches: `77.95%`
-  - functions: `69.69%`
-- минимальные пороги frontend coverage:
+- `npm ci` проходит
+- `npm run lint` проходит
+- `npm run test:coverage` проходит
+- `npm run build` проходит
+- `24 passed`
+- frontend coverage:
+  - statements: `85.47%`
+  - lines: `85.39%`
+  - branches: `71.77%`
+  - functions: `84.28%`
+- минимальные frontend thresholds:
   - statements: `85%`
   - lines: `85%`
   - branches: `70%`
   - functions: `65%`
 
-## Что именно проверяется по заданию лабораторной
+### Docker / smoke-check
 
-Закрыты пункты задания:
+- `docker compose up --build -d backend frontend` успешно отработал на обновленных образах;
+- backend health endpoint отвечает `{"status":"healthy", ...}`;
+- фронтенд на `http://localhost:3000/` отдает актуальный SEO HTML с `Intelligent Meeting Analyzer`;
+- `http://localhost:3000/robots.txt` отдается корректно.
+
+Примечание:
+
+После обнаружения, что frontend-контейнер мог помечаться как `unhealthy` из-за healthcheck, compose-конфиг был дополнительно исправлен. Повторная локальная рекреация контейнера после этого последнего правочного шага уперлась в нестабильность Docker Desktop pipe (`dockerDesktopLinuxEngine`) вне кода проекта. Само приложение и HTTP smoke-check при этом уже были рабочими.
+
+## Что закрывает лабораторная
+
+Реализованы и подтверждены:
 
 - тестовая модель приложения;
-- модульные тесты backend;
-- интеграционные тесты backend;
-- модульные и сценарные тесты frontend;
-- сквозные проверки ключевых сценариев;
-- отдельная test-infra;
+- backend unit / integration / e2e;
+- frontend unit / integration / e2e;
+- отдельное тестовое окружение;
 - изолированная тестовая БД;
 - мокирование внешних зависимостей;
-- разделение `unit / integration / e2e`;
+- разделение тестов по типам;
 - контролируемые метрики покрытия;
 - проверка ролей и прав доступа;
 - проверка работы внешнего API и отказов;
-- проверка файловых сценариев.
+- проверка файловых сценариев;
+- воспроизводимый набор команд для локальной и CI-проверки.
 
-## Ограничения и замечания
+## Остаточные замечания
 
-В проекте остались технические предупреждения, которые не ломают прохождение лабораторной, но относятся к накопленному legacy-коду:
+В проекте есть legacy-предупреждения, которые не ломают лабораторную, но видны в логах:
 
 - deprecated `FastAPI on_event`;
 - deprecated `Pydantic from_orm / class Config`;
 - часть backend-кода все еще использует `datetime.utcnow()`.
 
-Они не мешают прохождению тестов и сборки, но могут быть вынесены в отдельную техническую доработку позже.
+Это не мешает прохождению линтеров, тестов и сборки, но может быть вынесено в отдельную техническую доработку.

@@ -95,7 +95,7 @@ services:
       - app-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/"]
+      test: ["CMD-SHELL", "test -s /usr/share/nginx/html/index.html && ps | grep -q '[n]ginx: master process'"]
       interval: 30s
       timeout: 5s
       retries: 3
